@@ -5,7 +5,7 @@ import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 
 export default function ChatWindow() {
-  const { messages, sendMessage } = useChat();
+  const { messages, sendMessage, isAssistantTyping } = useChat();
 
   return (
     <div className="flex h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-lg">
@@ -14,7 +14,7 @@ export default function ChatWindow() {
           Awareness Helper
         </h1>
       </div>
-      <MessageList messages={messages} />
+      <MessageList messages={messages} isAssistantTyping={isAssistantTyping} />
       <MessageInput onSend={sendMessage} />
     </div>
   );
