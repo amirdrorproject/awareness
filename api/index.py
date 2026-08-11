@@ -5,9 +5,9 @@ import anthropic
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI()
+from system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
 
-SYSTEM_PROMPT = "You are Awareness Helper, a supportive assistant."
+app = FastAPI()
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
@@ -39,7 +39,7 @@ def chat(request: ChatRequest):
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            system=SYSTEM_PROMPT,
+            system=get_system_prompt(),
             max_tokens=1024,
             messages=[
                 {"role": m.role, "content": m.content} for m in request.messages
@@ -54,3 +54,22 @@ def chat(request: ChatRequest):
             "role": "assistant",
             "content": f"Failed to reach Claude: {exc}",
         }
+
+
+class SystemPromptUpdateRequest(BaseModel):
+    content: str
+
+
+@app.get("/api/admin/system-prompt")
+def get_system_prompt_admin():
+    record = get_system_prompt_record()
+    return {"content": record.get("content"), "updated_at": record.get("updated_at")}
+
+
+@app.post("/api/admin/system-prompt")
+def update_system_prompt_admin(request: SystemPromptUpdateRequest):
+    try:
+        record = update_system_prompt(request.content)
+        return {"content": record.get("content"), "updated_at": record.get("updated_at")}
+    except Exception as exc:
+        return {"error": f"Failed to update system prompt: {exc}"}
