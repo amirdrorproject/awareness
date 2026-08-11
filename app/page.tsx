@@ -11,7 +11,7 @@ export default function Home() {
     setError(null);
     setBackendTime(null);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/time`);
+      const res = await fetch("/api/time");
       if (!res.ok) throw new Error(`Request failed: ${res.status}`);
       const data = await res.json();
       setBackendTime(data.time);

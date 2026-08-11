@@ -5,6 +5,6 @@ from fastapi import FastAPI
 app = FastAPI()
 
 
-@app.get("/time")
+@app.get("/api/time")
 def get_time():
     return {"time": datetime.now(timezone.utc).isoformat()}
