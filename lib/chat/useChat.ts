@@ -18,32 +18,43 @@ export function useChat() {
       createdAt: Date.now(),
     };
 
-    setMessages((prev) => [...prev, message]);
-    setIsAssistantTyping(true);
+    setMessages((prev) => {
+      const next = [...prev, message];
 
-    (async () => {
-      let replyContent: string;
-      try {
-        const res = await fetch("/api/time");
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-        const data = await res.json();
-        replyContent = data.time;
-      } catch (err) {
-        replyContent =
-          err instanceof Error
-            ? `שגיאה בפנייה לשרת: ${err.message}`
-            : "שגיאה בפנייה לשרת.";
-      }
+      setIsAssistantTyping(true);
 
-      const reply: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: replyContent,
-        createdAt: Date.now(),
-      };
-      setMessages((prev) => [...prev, reply]);
-      setIsAssistantTyping(false);
-    })();
+      (async () => {
+        let replyContent: string;
+        try {
+          const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: next.map(({ role, content }) => ({ role, content })),
+            }),
+          });
+          if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+          const data = await res.json();
+          replyContent = data.content;
+        } catch (err) {
+          replyContent =
+            err instanceof Error
+              ? `שגיאה בפנייה לשרת: ${err.message}`
+              : "שגיאה בפנייה לשרת.";
+        }
+
+        const reply: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: replyContent,
+          createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, reply]);
+        setIsAssistantTyping(false);
+      })();
+
+      return next;
+    });
   }, []);
 
   return { messages, sendMessage, isAssistantTyping };
