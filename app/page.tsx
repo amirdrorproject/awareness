@@ -25,7 +25,7 @@ export default function Home() {
       <ChatWindow />
 
       {/* Temporary: verifies frontend-backend connectivity */}
-      <div className="flex flex-col items-center gap-2">
+      <div className="hidden flex-col items-center gap-2">
         <button
           onClick={testBackend}
           className="rounded-full bg-gray-800 px-5 py-2 text-sm font-medium text-white transition hover:bg-gray-900"
