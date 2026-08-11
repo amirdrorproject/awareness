@@ -3,13 +3,6 @@
 import { useCallback, useState } from "react";
 import type { Message } from "./types";
 
-const MOCK_ASSISTANT_REPLY =
-  "תודה על ההודעה. זו תגובת דמה - החיבור האמיתי יתווסף בהמשך.";
-
-function randomDelay() {
-  return 700 + Math.random() * 300;
-}
-
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
@@ -28,16 +21,29 @@ export function useChat() {
     setMessages((prev) => [...prev, message]);
     setIsAssistantTyping(true);
 
-    setTimeout(() => {
+    (async () => {
+      let replyContent: string;
+      try {
+        const res = await fetch("/api/time");
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const data = await res.json();
+        replyContent = data.time;
+      } catch (err) {
+        replyContent =
+          err instanceof Error
+            ? `שגיאה בפנייה לשרת: ${err.message}`
+            : "שגיאה בפנייה לשרת.";
+      }
+
       const reply: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: MOCK_ASSISTANT_REPLY,
+        content: replyContent,
         createdAt: Date.now(),
       };
       setMessages((prev) => [...prev, reply]);
       setIsAssistantTyping(false);
-    }, randomDelay());
+    })();
   }, []);
 
   return { messages, sendMessage, isAssistantTyping };
