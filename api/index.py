@@ -5,7 +5,7 @@ import anthropic
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
+from .system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
 
