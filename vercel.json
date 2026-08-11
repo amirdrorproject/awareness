@@ -1,0 +1,12 @@
+{
+  "services": {
+    "frontend": {
+      "framework": "nextjs",
+      "root": "frontend"
+    },
+    "backend": {
+      "framework": "fastapi",
+      "root": "backend"
+    }
+  }
+}
