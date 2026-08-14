@@ -3,7 +3,7 @@ import re
 from typing import Annotated, TypedDict
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -65,9 +65,64 @@ def classify_opening(state: GraphState) -> dict:
     }
 
 
+def respond_direct(state: GraphState) -> dict:
+    opening_status = state.get("opening_status")
+
+    if opening_status == 1:
+        response_text = "למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור. אני מקשיב לך."
+        note = "[respond_direct] Triggered by opening_status=1 (minimal message) - proceeding without asking permission."
+    else:
+        response_text = "למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור."
+        note = f"[respond_direct] Triggered by opening_status={opening_status} (detailed situation/dilemma) - proceeding without asking permission."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+    }
+
+
+def respond_with_check(state: GraphState) -> dict:
+    opening_status = state.get("opening_status")
+
+    if opening_status == 2:
+        acknowledgment = "אני מבין שיש כאן משהו שתרצה לברר."
+        note = "[respond_with_check] Triggered by opening_status=2 (short situation description)."
+    elif opening_status == 4:
+        acknowledgment = "אני מבין שיש כאן התלבטות."
+        note = "[respond_with_check] Triggered by opening_status=4 (short dilemma)."
+    else:
+        acknowledgment = "אני מבין שיש כאן משהו שתרצה לברר."
+        note = f"WARNING: opening_status missing/invalid ({opening_status!r}) - falling back to respond_with_check as a safe default."
+
+    response_text = f"למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור. {acknowledgment} רוצה להמשיך?"
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+    }
+
+
+def route_after_classification(state: GraphState) -> str:
+    if state.get("opening_status") in (1, 3, 5):
+        return "respond_direct"
+    return "respond_with_check"
+
+
 graph_builder = StateGraph(GraphState)
 graph_builder.add_node("classify_opening", classify_opening)
+graph_builder.add_node("respond_direct", respond_direct)
+graph_builder.add_node("respond_with_check", respond_with_check)
+
 graph_builder.add_edge(START, "classify_opening")
-graph_builder.add_edge("classify_opening", END)
+graph_builder.add_conditional_edges(
+    "classify_opening",
+    route_after_classification,
+    {
+        "respond_direct": "respond_direct",
+        "respond_with_check": "respond_with_check",
+    },
+)
+graph_builder.add_edge("respond_direct", END)
+graph_builder.add_edge("respond_with_check", END)
 
 graph = graph_builder.compile()
