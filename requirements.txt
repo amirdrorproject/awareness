@@ -2,3 +2,5 @@ fastapi
 uvicorn
 anthropic
 supabase
+langgraph
+langchain-anthropic
