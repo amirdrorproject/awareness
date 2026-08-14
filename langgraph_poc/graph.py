@@ -1,9 +1,11 @@
 import os
 import re
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 
 CLASSIFICATION_MODEL = "claude-sonnet-4-6"
 
@@ -20,17 +22,17 @@ MODE_NUMBER_PATTERN = re.compile(r"(?<!\d)[1-5](?!\d)")
 
 
 class GraphState(TypedDict):
-    messages: list[dict]
+    messages: Annotated[list, add_messages]
     internal_audit_log: str
     opening_status: int
 
 
 def classify_opening(state: GraphState) -> dict:
-    user_messages = [m for m in state["messages"] if m.get("role") == "user"]
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     if not user_messages:
         return {"internal_audit_log": "WARNING: no user message found to classify."}
 
-    first_message = user_messages[0]["content"]
+    first_message = user_messages[0].content
 
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
