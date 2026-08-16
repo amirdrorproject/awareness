@@ -1,10 +1,9 @@
 import os
-from typing import Annotated, Literal, TypedDict
+from typing import Literal
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph import END, MessagesState, START, StateGraph
 from pydantic import BaseModel, Field
 
 CLASSIFICATION_MODEL = "claude-sonnet-4-6"
@@ -41,8 +40,7 @@ class ContentStateClassification(BaseModel):
     state: Literal["emotional_clear", "emotional_vague", "practical_clear", "dual"]
 
 
-class GraphState(TypedDict):
-    messages: Annotated[list, add_messages]
+class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
     content_state: str
