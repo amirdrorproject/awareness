@@ -93,6 +93,12 @@ def respond_direct(state: GraphState) -> dict:
     }
 
 
+def route_after_respond_direct(state: GraphState) -> str:
+    if state.get("opening_status") == 1:
+        return "end"
+    return "continue"
+
+
 def respond_with_check(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
 
@@ -192,6 +198,12 @@ def route_after_content_state(state: GraphState) -> str:
     return "end"
 
 
+def route_from_start(state: GraphState) -> str:
+    if state.get("opening_status") is not None:
+        return "classify_content_state"  # opening already handled in a previous turn - skip
+    return "classify_opening"  # first turn - no opening_status yet
+
+
 graph_builder = StateGraph(GraphState)
 graph_builder.add_node("classify_opening", classify_opening)
 graph_builder.add_node("respond_direct", respond_direct)
@@ -199,7 +211,14 @@ graph_builder.add_node("respond_with_check", respond_with_check)
 graph_builder.add_node("classify_content_state", classify_content_state)
 graph_builder.add_node("ask_direction", ask_direction)
 
-graph_builder.add_edge(START, "classify_opening")
+graph_builder.add_conditional_edges(
+    START,
+    route_from_start,
+    {
+        "classify_opening": "classify_opening",
+        "classify_content_state": "classify_content_state",
+    },
+)
 graph_builder.add_conditional_edges(
     "classify_opening",
     route_after_classification,
@@ -208,8 +227,15 @@ graph_builder.add_conditional_edges(
         "respond_with_check": "respond_with_check",
     },
 )
-graph_builder.add_edge("respond_direct", "classify_content_state")
-graph_builder.add_edge("respond_with_check", "classify_content_state")
+graph_builder.add_conditional_edges(
+    "respond_direct",
+    route_after_respond_direct,
+    {
+        "continue": "classify_content_state",
+        "end": END,
+    },
+)
+graph_builder.add_edge("respond_with_check", END)
 graph_builder.add_conditional_edges(
     "classify_content_state",
     route_after_content_state,
