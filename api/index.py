@@ -1,10 +1,13 @@
 import os
+import uuid
 from datetime import datetime, timezone
 
 import anthropic
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .chat_langgraph import get_last_assistant_message, run_chat_turn
 from .system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
@@ -73,3 +76,39 @@ def update_system_prompt_admin(request: SystemPromptUpdateRequest):
         return {"content": record.get("content"), "updated_at": record.get("updated_at")}
     except Exception as exc:
         return {"error": f"Failed to update system prompt: {exc}"}
+
+
+THREAD_ID_COOKIE = "awareness_thread_id"
+THREAD_ID_COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year
+
+
+class LangGraphChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/api/chat-langgraph")
+def chat_langgraph(request: LangGraphChatRequest, http_request: Request):
+    thread_id = http_request.cookies.get(THREAD_ID_COOKIE)
+    is_new_thread = thread_id is None
+    if is_new_thread:
+        thread_id = str(uuid.uuid4())
+
+    try:
+        result = run_chat_turn(thread_id, request.message)
+        payload = {
+            "response": get_last_assistant_message(result["messages"]),
+            "internal_audit_log": result.get("internal_audit_log"),
+        }
+    except Exception as exc:
+        payload = {"error": f"Failed to run chat turn: {exc}"}
+
+    response = JSONResponse(content=payload)
+    if is_new_thread:
+        response.set_cookie(
+            key=THREAD_ID_COOKIE,
+            value=thread_id,
+            max_age=THREAD_ID_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+    return response

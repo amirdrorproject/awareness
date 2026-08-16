@@ -204,46 +204,50 @@ def route_from_start(state: GraphState) -> str:
     return "classify_opening"  # first turn - no opening_status yet
 
 
-graph_builder = StateGraph(GraphState)
-graph_builder.add_node("classify_opening", classify_opening)
-graph_builder.add_node("respond_direct", respond_direct)
-graph_builder.add_node("respond_with_check", respond_with_check)
-graph_builder.add_node("classify_content_state", classify_content_state)
-graph_builder.add_node("ask_direction", ask_direction)
+def build_graph_builder() -> StateGraph:
+    graph_builder = StateGraph(GraphState)
+    graph_builder.add_node("classify_opening", classify_opening)
+    graph_builder.add_node("respond_direct", respond_direct)
+    graph_builder.add_node("respond_with_check", respond_with_check)
+    graph_builder.add_node("classify_content_state", classify_content_state)
+    graph_builder.add_node("ask_direction", ask_direction)
 
-graph_builder.add_conditional_edges(
-    START,
-    route_from_start,
-    {
-        "classify_opening": "classify_opening",
-        "classify_content_state": "classify_content_state",
-    },
-)
-graph_builder.add_conditional_edges(
-    "classify_opening",
-    route_after_classification,
-    {
-        "respond_direct": "respond_direct",
-        "respond_with_check": "respond_with_check",
-    },
-)
-graph_builder.add_conditional_edges(
-    "respond_direct",
-    route_after_respond_direct,
-    {
-        "continue": "classify_content_state",
-        "end": END,
-    },
-)
-graph_builder.add_edge("respond_with_check", END)
-graph_builder.add_conditional_edges(
-    "classify_content_state",
-    route_after_content_state,
-    {
-        "ask_direction": "ask_direction",
-        "end": END,
-    },
-)
-graph_builder.add_edge("ask_direction", END)
+    graph_builder.add_conditional_edges(
+        START,
+        route_from_start,
+        {
+            "classify_opening": "classify_opening",
+            "classify_content_state": "classify_content_state",
+        },
+    )
+    graph_builder.add_conditional_edges(
+        "classify_opening",
+        route_after_classification,
+        {
+            "respond_direct": "respond_direct",
+            "respond_with_check": "respond_with_check",
+        },
+    )
+    graph_builder.add_conditional_edges(
+        "respond_direct",
+        route_after_respond_direct,
+        {
+            "continue": "classify_content_state",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("respond_with_check", END)
+    graph_builder.add_conditional_edges(
+        "classify_content_state",
+        route_after_content_state,
+        {
+            "ask_direction": "ask_direction",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("ask_direction", END)
 
-graph = graph_builder.compile()
+    return graph_builder
+
+
+graph = build_graph_builder().compile()
