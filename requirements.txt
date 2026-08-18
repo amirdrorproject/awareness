@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+anthropic
+supabase
+langgraph
+langchain-anthropic
+langgraph-checkpoint-postgres
+psycopg[binary,pool]

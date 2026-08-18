@@ -36,3 +36,13 @@ next-env.d.ts
 
 # langgraph
 .langgraph_api/
+
+# python
+api/__pycache__/
+api/**/__pycache__/
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
