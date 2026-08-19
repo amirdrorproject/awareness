@@ -13,6 +13,8 @@ export function useChat() {
     threadIdRef.current = crypto.randomUUID();
   }
 
+  const previousAuditLogRef = useRef("");
+
   const sendMessage = useCallback(
     (content: string) => {
       const trimmed = content.trim();
@@ -49,7 +51,14 @@ export function useChat() {
               const data = await res.json();
               if (data.error) throw new Error(data.error);
               replyContent = data.response;
-              internalAuditLog = data.internal_audit_log;
+
+              const fullAuditLog: string | undefined = data.internal_audit_log;
+              if (typeof fullAuditLog === "string") {
+                internalAuditLog = fullAuditLog
+                  .slice(previousAuditLogRef.current.length)
+                  .trimStart();
+                previousAuditLogRef.current = fullAuditLog;
+              }
             } else {
               const res = await fetch("/api/chat", {
                 method: "POST",
