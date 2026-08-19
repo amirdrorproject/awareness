@@ -29,6 +29,8 @@ ASK_DIRECTION_EMOTIONAL_VAGUE_PROMPT = """You are responding briefly in Hebrew t
 
 ASK_DIRECTION_DUAL_PROMPT = """You are responding briefly in Hebrew to a message that contains two clear threads: an emotional one and a practical one. Ask the person which one they want to start with, referencing both threads concretely and specifically based on their actual message - do not use generic placeholders. Example tone: "שומע כאן גם [emotional side] וגם [practical side] - מה יותר חשוב לך להתחיל ממנו?" Respond with the message only, in Hebrew, nothing else."""
 
+CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -40,10 +42,16 @@ class ContentStateClassification(BaseModel):
     state: Literal["emotional_clear", "emotional_vague", "practical_clear", "dual"]
 
 
+class DirectionChoiceClassification(BaseModel):
+    reasoning: str = Field(description="Reasoning for the chosen direction")
+    choice: Literal["pause", "continue"]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
     content_state: str
+    direction_choice: str
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -198,7 +206,48 @@ def route_after_content_state(state: GraphState) -> str:
     return "end"
 
 
+def classify_direction_choice(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify direction choice.",
+        }
+
+    last_message = user_messages[-1].content
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(DirectionChoiceClassification)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT},
+                {"role": "user", "content": last_message},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: direction choice classification failed: {exc}",
+        }
+
+    return {
+        "internal_audit_log": existing_log + "\n" + result.reasoning,
+        "direction_choice": result.choice,
+    }
+
+
 def route_from_start(state: GraphState) -> str:
+    if (
+        state.get("content_state") in ("emotional_vague", "dual")
+        and state.get("direction_choice") is None
+    ):
+        return "classify_direction_choice"  # ask_direction just asked a question - classify the reply
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
     return "classify_opening"  # first turn - no opening_status yet
@@ -211,6 +260,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("respond_with_check", respond_with_check)
     graph_builder.add_node("classify_content_state", classify_content_state)
     graph_builder.add_node("ask_direction", ask_direction)
+    graph_builder.add_node("classify_direction_choice", classify_direction_choice)
 
     graph_builder.add_conditional_edges(
         START,
@@ -218,6 +268,7 @@ def build_graph_builder() -> StateGraph:
         {
             "classify_opening": "classify_opening",
             "classify_content_state": "classify_content_state",
+            "classify_direction_choice": "classify_direction_choice",
         },
     )
     graph_builder.add_conditional_edges(
@@ -246,6 +297,7 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("ask_direction", END)
+    graph_builder.add_edge("classify_direction_choice", END)
 
     return graph_builder
 
