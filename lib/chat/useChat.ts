@@ -1,12 +1,19 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { Message, MessageSource } from "./types";
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [useLangGraph, setUseLangGraph] = useState(true);
+
+  const threadIdRef = useRef<string | null>(null);
+  if (threadIdRef.current === null) {
+    threadIdRef.current = crypto.randomUUID();
+  }
+
+  const previousAuditLogRef = useRef("");
 
   const sendMessage = useCallback(
     (content: string) => {
@@ -35,14 +42,23 @@ export function useChat() {
               const res = await fetch("/api/chat-langgraph", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify({ message: trimmed }),
+                body: JSON.stringify({
+                  message: trimmed,
+                  thread_id: threadIdRef.current,
+                }),
               });
               if (!res.ok) throw new Error(`Request failed: ${res.status}`);
               const data = await res.json();
               if (data.error) throw new Error(data.error);
               replyContent = data.response;
-              internalAuditLog = data.internal_audit_log;
+
+              const fullAuditLog: string | undefined = data.internal_audit_log;
+              if (typeof fullAuditLog === "string") {
+                internalAuditLog = fullAuditLog
+                  .slice(previousAuditLogRef.current.length)
+                  .trimStart();
+                previousAuditLogRef.current = fullAuditLog;
+              }
             } else {
               const res = await fetch("/api/chat", {
                 method: "POST",
