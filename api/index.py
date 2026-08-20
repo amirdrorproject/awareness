@@ -46,7 +46,23 @@ def pinecone_test():
         return {"connected": False, "error": f"Failed to connect to Pinecone: {exc}"}
 
 
-PINECONE_TEXT_FIELD_CANDIDATES = ("chunk_text", "text", "content")
+def _extract_hit_value(hit, *keys):
+    # hit may be a plain dict or a typed SDK object - try dict-style access
+    # (both with and without a leading underscore) before falling back to
+    # attribute-style access, since we can't be certain which this SDK version uses.
+    for key in keys:
+        if isinstance(hit, dict) and key in hit:
+            return hit[key]
+        try:
+            value = hit.get(key)
+        except AttributeError:
+            value = None
+        if value is not None:
+            return value
+        value = getattr(hit, key, None)
+        if value is not None:
+            return value
+    return None
 
 
 @app.get("/api/pinecone-query")
@@ -83,17 +99,15 @@ def pinecone_query(q: str):
 
         matches = []
         for hit in hits:
-            fields = hit.get("fields") or {}
-            text = next(
-                (fields[key] for key in PINECONE_TEXT_FIELD_CANDIDATES if key in fields),
-                None,
-            )
+            fields = _extract_hit_value(hit, "fields") or {}
             matches.append(
                 {
-                    "id": hit.get("_id"),
-                    "score": hit.get("_score"),
-                    "text": text,
-                    "fields": fields,
+                    "id": _extract_hit_value(hit, "_id", "id"),
+                    "score": _extract_hit_value(hit, "_score", "score"),
+                    "text": fields.get("text"),
+                    "module": fields.get("module"),
+                    "chunk_title": fields.get("chunk_title"),
+                    "doc_type": fields.get("doc_type"),
                 }
             )
 
