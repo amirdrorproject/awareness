@@ -21,6 +21,18 @@ def run_chat_turn(thread_id: str, user_message: str) -> dict:
             config=config,
         )
 
+        # Diagnostic fingerprint only - no message content, just shape/state,
+        # so a repeated identical line across requests is an immediate red flag
+        # in Vercel's runtime logs without needing to reproduce with new prints.
+        print(
+            f"[chat_langgraph] thread_id={thread_id!r} "
+            f"messages_count={len(result.get('messages', []))} "
+            f"opening_status={result.get('opening_status')!r} "
+            f"content_state={result.get('content_state')!r} "
+            f"direction_choice={result.get('direction_choice')!r} "
+            f"audit_log_len={len(result.get('internal_audit_log') or '')}"
+        )
+
         return {
             "messages": result.get("messages", []),
             "internal_audit_log": result.get("internal_audit_log"),
