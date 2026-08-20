@@ -49,12 +49,8 @@ def pinecone_test():
 PINECONE_TEXT_FIELD_CANDIDATES = ("chunk_text", "text", "content")
 
 
-class PineconeQueryRequest(BaseModel):
-    query: str
-
-
-@app.post("/api/pinecone-query")
-def pinecone_query(request: PineconeQueryRequest):
+@app.get("/api/pinecone-query")
+def pinecone_query(q: str):
     api_key = os.environ.get("PINECONE_API_KEY")
     index_name = os.environ.get("PINECONE_INDEX_NAME")
 
@@ -81,7 +77,7 @@ def pinecone_query(request: PineconeQueryRequest):
 
         results = index.search(
             namespace=namespace,
-            query={"inputs": {"text": request.query}, "top_k": 5},
+            query={"inputs": {"text": q}, "top_k": 5},
         )
         hits = (results.get("result") or {}).get("hits") or []
 
