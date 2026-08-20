@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from fastapi import FastAPI
+from pinecone import Pinecone
 from pydantic import BaseModel
 
 from .chat_langgraph import get_last_assistant_message, run_chat_turn
@@ -20,6 +21,29 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 @app.get("/api/time")
 def get_time():
     return {"time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/pinecone-test")
+def pinecone_test():
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+
+    if not api_key:
+        return {"connected": False, "error": "PINECONE_API_KEY is not set."}
+    if not index_name:
+        return {"connected": False, "error": "PINECONE_INDEX_NAME is not set."}
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+        stats = index.describe_index_stats()
+        return {
+            "connected": True,
+            "vector_count": stats.get("total_vector_count"),
+            "dimension": stats.get("dimension"),
+        }
+    except Exception as exc:
+        return {"connected": False, "error": f"Failed to connect to Pinecone: {exc}"}
 
 
 class ChatMessage(BaseModel):
