@@ -50,5 +50,11 @@ def run_chat_turn(thread_id: str, user_message: str) -> dict:
 
 
 def get_last_assistant_message(messages: list) -> str | None:
-    ai_messages = [m for m in messages if isinstance(m, AIMessage)]
-    return ai_messages[-1].content if ai_messages else None
+    # Only return a reply if this turn actually produced one - i.e. the trailing
+    # message is a fresh AIMessage, not just the human message we sent (which is
+    # what happens when a turn only classifies/logs, like classify_direction_choice,
+    # or reaches END directly, like emotional_clear/practical_clear). Otherwise this
+    # would keep re-serving the last AIMessage from an earlier turn as if it were new.
+    if not messages or not isinstance(messages[-1], AIMessage):
+        return None
+    return messages[-1].content
