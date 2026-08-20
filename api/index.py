@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -9,6 +10,9 @@ from .chat_langgraph import get_last_assistant_message, run_chat_turn
 from .system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
+
+logger = logging.getLogger("api.index")
+logger.setLevel(logging.INFO)
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
@@ -93,4 +97,7 @@ def chat_langgraph(request: LangGraphChatRequest):
             "internal_audit_log": result.get("internal_audit_log"),
         }
     except Exception as exc:
+        logger.exception(
+            "chat_langgraph failed for thread_id=%r", request.thread_id
+        )
         return {"error": f"Failed to run chat turn: {exc}"}
