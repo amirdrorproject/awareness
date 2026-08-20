@@ -30,7 +30,8 @@ def run_chat_turn(thread_id: str, user_message: str) -> dict:
             f"opening_status={result.get('opening_status')!r} "
             f"content_state={result.get('content_state')!r} "
             f"direction_choice={result.get('direction_choice')!r} "
-            f"audit_log_len={len(result.get('internal_audit_log') or '')}"
+            f"audit_log_len={len(result.get('internal_audit_log') or '')}",
+            flush=True,
         )
 
         return {
