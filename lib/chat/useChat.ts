@@ -34,7 +34,7 @@ export function useChat() {
 
         (async () => {
           const source: MessageSource = useLangGraph ? "langgraph" : "chat";
-          let replyContent: string;
+          let replyContent: string | null = null;
           let internalAuditLog: string | undefined;
 
           try {
@@ -50,7 +50,6 @@ export function useChat() {
               if (!res.ok) throw new Error(`Request failed: ${res.status}`);
               const data = await res.json();
               if (data.error) throw new Error(data.error);
-              replyContent = data.response;
 
               const fullAuditLog: string | undefined = data.internal_audit_log;
               if (typeof fullAuditLog === "string") {
@@ -59,6 +58,11 @@ export function useChat() {
                   .trimStart();
                 previousAuditLogRef.current = fullAuditLog;
               }
+
+              // A turn can legitimately produce no reply (e.g. classify_direction_choice,
+              // or reaching END directly on emotional_clear/practical_clear) - it only
+              // classified and logged internally. Nothing to show, but not an error either.
+              replyContent = data.response ?? null;
             } else {
               const res = await fetch("/api/chat", {
                 method: "POST",
@@ -78,15 +82,17 @@ export function useChat() {
                 : "שגיאה בפנייה לשרת.";
           }
 
-          const reply: Message = {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: replyContent,
-            createdAt: Date.now(),
-            source,
-            internalAuditLog,
-          };
-          setMessages((prev) => [...prev, reply]);
+          if (replyContent !== null) {
+            const reply: Message = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: replyContent,
+              createdAt: Date.now(),
+              source,
+              internalAuditLog,
+            };
+            setMessages((prev) => [...prev, reply]);
+          }
           setIsAssistantTyping(false);
         })();
 
