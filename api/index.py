@@ -46,6 +46,66 @@ def pinecone_test():
         return {"connected": False, "error": f"Failed to connect to Pinecone: {exc}"}
 
 
+PINECONE_TEXT_FIELD_CANDIDATES = ("chunk_text", "text", "content")
+
+
+class PineconeQueryRequest(BaseModel):
+    query: str
+
+
+@app.post("/api/pinecone-query")
+def pinecone_query(request: PineconeQueryRequest):
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+
+    if not api_key:
+        return {"error": "PINECONE_API_KEY is not set."}
+    if not index_name:
+        return {"error": "PINECONE_INDEX_NAME is not set."}
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+
+        # Auto-detect which namespace actually has data, rather than assuming -
+        # prefer the default namespace if it's populated, else the first populated one.
+        stats = index.describe_index_stats()
+        namespaces = stats.get("namespaces") or {}
+        namespace = ""
+        if not (namespaces.get("") or {}).get("vector_count"):
+            populated = [
+                name for name, info in namespaces.items() if (info or {}).get("vector_count")
+            ]
+            if populated:
+                namespace = populated[0]
+
+        results = index.search(
+            namespace=namespace,
+            query={"inputs": {"text": request.query}, "top_k": 5},
+        )
+        hits = (results.get("result") or {}).get("hits") or []
+
+        matches = []
+        for hit in hits:
+            fields = hit.get("fields") or {}
+            text = next(
+                (fields[key] for key in PINECONE_TEXT_FIELD_CANDIDATES if key in fields),
+                None,
+            )
+            matches.append(
+                {
+                    "id": hit.get("_id"),
+                    "score": hit.get("_score"),
+                    "text": text,
+                    "fields": fields,
+                }
+            )
+
+        return {"namespace": namespace, "matches": matches}
+    except Exception as exc:
+        return {"error": f"Failed to query Pinecone: {exc}"}
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
