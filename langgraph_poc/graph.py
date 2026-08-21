@@ -4,6 +4,7 @@ from typing import Literal
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, MessagesState, START, StateGraph
+from pinecone import Pinecone
 from pydantic import BaseModel, Field
 
 CLASSIFICATION_MODEL = "claude-sonnet-4-6"
@@ -31,6 +32,17 @@ ASK_DIRECTION_DUAL_PROMPT = """You are responding briefly in Hebrew to a message
 
 CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
 
+BUILD_BLOCKS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
+
+- row_number: sequential row number, starting from 1
+- expression: the exact quote from the client's own words
+- expression_type: one of "גלוי" (explicit), "מרומז" (implied), or "פיזי" (physical/somatic)
+- bank_name: the name of the bank (module) the matched expression came from
+- matched_expression: the specific matching expression found in the bank content
+- match_level: one of "זהה" (identical), "דומה" (similar), "קרוב" (close), or "מנוגד" (opposite)
+
+Only use the bank content provided below as the source for bank_name and matched_expression - do not invent matches that aren't grounded in it."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -47,11 +59,27 @@ class DirectionChoiceClassification(BaseModel):
     choice: Literal["pause", "continue"]
 
 
+class TableRow(BaseModel):
+    row_number: int
+    expression: str
+    expression_type: Literal["גלוי", "מרומז", "פיזי"]
+    bank_name: str
+    matched_expression: str
+    match_level: Literal["זהה", "דומה", "קרוב", "מנוגד"]
+
+
+class BlocksTableResult(BaseModel):
+    reasoning: str
+    rows: list[TableRow]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
     content_state: str
     direction_choice: str
+    blocks_context: list[dict]
+    blocks_table: list[dict]
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -203,7 +231,148 @@ def ask_direction(state: GraphState) -> dict:
 def route_after_content_state(state: GraphState) -> str:
     if state.get("content_state") in ("emotional_vague", "dual"):
         return "ask_direction"
+    if state.get("content_state") == "emotional_clear":
+        return "retrieve_blocks_context"
     return "end"
+
+
+def _extract_hit_value(hit, *keys):
+    # hit may be a plain dict or a typed SDK object - try dict-style access
+    # (both with and without a leading underscore) before falling back to
+    # attribute-style access, since we can't be certain which this SDK version uses.
+    for key in keys:
+        if isinstance(hit, dict) and key in hit:
+            return hit[key]
+        try:
+            value = hit.get(key)
+        except AttributeError:
+            value = None
+        if value is not None:
+            return value
+        value = getattr(hit, key, None)
+        if value is not None:
+            return value
+    return None
+
+
+def retrieve_blocks_context(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    query_text = " ".join(
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in human_messages
+    ).strip()
+
+    if not query_text:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user messages found to build blocks_context query.",
+        }
+
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+    if not api_key or not index_name:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: PINECONE_API_KEY/PINECONE_INDEX_NAME not set - skipping blocks context retrieval.",
+        }
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+
+        # Auto-detect which namespace actually has data, same as /api/pinecone-query.
+        # Not applying a module/doc_type filter for "bank" content yet - we haven't
+        # confirmed the actual metadata values in this index, and a wrong filter
+        # would silently return zero results rather than erroring.
+        stats = index.describe_index_stats()
+        namespaces = stats.get("namespaces") or {}
+        namespace = ""
+        if not (namespaces.get("") or {}).get("vector_count"):
+            populated = [
+                name for name, info in namespaces.items() if (info or {}).get("vector_count")
+            ]
+            if populated:
+                namespace = populated[0]
+
+        results = index.search(
+            namespace=namespace,
+            query={"inputs": {"text": query_text}, "top_k": 5},
+        )
+        hits = (results.get("result") or {}).get("hits") or []
+
+        blocks_context = []
+        for hit in hits:
+            fields = _extract_hit_value(hit, "fields") or {}
+            blocks_context.append(
+                {
+                    "id": _extract_hit_value(hit, "_id", "id"),
+                    "score": _extract_hit_value(hit, "_score", "score"),
+                    "text": fields.get("text"),
+                    "module": fields.get("module"),
+                    "chunk_title": fields.get("chunk_title"),
+                    "doc_type": fields.get("doc_type"),
+                }
+            )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: blocks context retrieval failed: {exc}",
+        }
+
+    note = f"[retrieve_blocks_context] Retrieved {len(blocks_context)} bank chunks for expression matching."
+    return {
+        "blocks_context": blocks_context,
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
+def build_blocks_table(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    conversation_text = "\n".join(
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in human_messages
+    )
+
+    blocks_context = state.get("blocks_context") or []
+    bank_content_text = "\n\n".join(
+        f"[{chunk.get('module')} - {chunk.get('chunk_title')}]\n{chunk.get('text')}"
+        for chunk in blocks_context
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(BlocksTableResult)
+
+    user_content = (
+        f"Client conversation:\n{conversation_text}\n\n"
+        f"Retrieved bank content:\n{bank_content_text}"
+    )
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": BUILD_BLOCKS_TABLE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: build_blocks_table failed: {exc}",
+        }
+
+    rows = [row.model_dump() for row in result.rows]
+    bank_count = len({row["bank_name"] for row in rows})
+    note = f"[build_blocks_table] Identified {len(rows)} expressions across {bank_count} banks."
+
+    return {
+        "blocks_table": rows,
+        "internal_audit_log": existing_log + "\n" + note,
+    }
 
 
 def classify_direction_choice(state: GraphState) -> dict:
@@ -261,6 +430,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_content_state", classify_content_state)
     graph_builder.add_node("ask_direction", ask_direction)
     graph_builder.add_node("classify_direction_choice", classify_direction_choice)
+    graph_builder.add_node("retrieve_blocks_context", retrieve_blocks_context)
+    graph_builder.add_node("build_blocks_table", build_blocks_table)
 
     graph_builder.add_conditional_edges(
         START,
@@ -293,11 +464,14 @@ def build_graph_builder() -> StateGraph:
         route_after_content_state,
         {
             "ask_direction": "ask_direction",
+            "retrieve_blocks_context": "retrieve_blocks_context",
             "end": END,
         },
     )
     graph_builder.add_edge("ask_direction", END)
     graph_builder.add_edge("classify_direction_choice", END)
+    graph_builder.add_edge("retrieve_blocks_context", "build_blocks_table")
+    graph_builder.add_edge("build_blocks_table", END)
 
     return graph_builder
 
