@@ -43,6 +43,8 @@ BUILD_BLOCKS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the convers
 
 Only use the bank content provided below as the source for bank_name and matched_expression - do not invent matches that aren't grounded in it."""
 
+ORGANIZE_INTO_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into blocks (topic groups). Each block should have a short, factual-neutral topic phrase - not emotional or interpretive language. Every row must be assigned to exactly one block_id - no orphaned rows. Decide the number of blocks naturally based on the content; do not force a specific count."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -66,10 +68,22 @@ class TableRow(BaseModel):
     bank_name: str
     matched_expression: str
     match_level: Literal["זהה", "דומה", "קרוב", "מנוגד"]
+    block_id: int
 
 
 class BlocksTableResult(BaseModel):
     reasoning: str
+    rows: list[TableRow]
+
+
+class Block(BaseModel):
+    block_id: int
+    topic: str
+
+
+class OrganizeBlocksResult(BaseModel):
+    reasoning: str
+    blocks: list[Block]
     rows: list[TableRow]
 
 
@@ -80,6 +94,7 @@ class GraphState(MessagesState):
     direction_choice: str
     blocks_context: list[dict]
     blocks_table: list[dict]
+    blocks_organized: list[dict]
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -375,6 +390,53 @@ def build_blocks_table(state: GraphState) -> dict:
     }
 
 
+def organize_into_blocks(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    blocks_table = state.get("blocks_table") or []
+
+    if not blocks_table:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no blocks_table rows found to organize into blocks.",
+        }
+
+    rows_text = "\n".join(
+        f"{row.get('row_number')}. expression={row.get('expression')!r}, "
+        f"expression_type={row.get('expression_type')}, bank_name={row.get('bank_name')}, "
+        f"matched_expression={row.get('matched_expression')!r}, match_level={row.get('match_level')}"
+        for row in blocks_table
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(OrganizeBlocksResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": ORGANIZE_INTO_BLOCKS_SYSTEM_PROMPT},
+                {"role": "user", "content": rows_text},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: organize_into_blocks failed: {exc}",
+        }
+
+    blocks = [block.model_dump() for block in result.blocks]
+    rows = [row.model_dump() for row in result.rows]
+    note = f"[organize_into_blocks] Organized {len(rows)} rows into {len(blocks)} blocks."
+
+    return {
+        "blocks_organized": blocks,
+        "blocks_table": rows,
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -432,6 +494,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_direction_choice", classify_direction_choice)
     graph_builder.add_node("retrieve_blocks_context", retrieve_blocks_context)
     graph_builder.add_node("build_blocks_table", build_blocks_table)
+    graph_builder.add_node("organize_into_blocks", organize_into_blocks)
 
     graph_builder.add_conditional_edges(
         START,
@@ -471,7 +534,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_edge("ask_direction", END)
     graph_builder.add_edge("classify_direction_choice", END)
     graph_builder.add_edge("retrieve_blocks_context", "build_blocks_table")
-    graph_builder.add_edge("build_blocks_table", END)
+    graph_builder.add_edge("build_blocks_table", "organize_into_blocks")
+    graph_builder.add_edge("organize_into_blocks", END)
 
     return graph_builder
 
