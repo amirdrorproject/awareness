@@ -32,7 +32,7 @@ ASK_DIRECTION_DUAL_PROMPT = """You are responding briefly in Hebrew to a message
 
 CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
 
-BUILD_BLOCKS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
+BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
 
 - row_number: sequential row number, starting from 1
 - expression: the exact quote from the client's own words
@@ -43,7 +43,7 @@ BUILD_BLOCKS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the convers
 
 Only use the bank content provided below as the source for bank_name and matched_expression - do not invent matches that aren't grounded in it."""
 
-ORGANIZE_INTO_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into blocks (topic groups). Each block should have a short, factual-neutral topic phrase - not emotional or interpretive language. Every row must be assigned to exactly one block_id - no orphaned rows. Decide the number of blocks naturally based on the content; do not force a specific count."""
+BUILD_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into blocks (topic groups). Each block should have a short, factual-neutral topic phrase - not emotional or interpretive language. Every row must be assigned to exactly one block_id - no orphaned rows. Decide the number of blocks naturally based on the content; do not force a specific count."""
 
 
 class OpeningClassification(BaseModel):
@@ -71,7 +71,7 @@ class TableRow(BaseModel):
     block_id: int
 
 
-class BlocksTableResult(BaseModel):
+class ExpressionsTableResult(BaseModel):
     reasoning: str
     rows: list[TableRow]
 
@@ -81,7 +81,7 @@ class Block(BaseModel):
     topic: str
 
 
-class OrganizeBlocksResult(BaseModel):
+class BuildBlocksResult(BaseModel):
     reasoning: str
     blocks: list[Block]
     rows: list[TableRow]
@@ -92,9 +92,9 @@ class GraphState(MessagesState):
     opening_status: int
     content_state: str
     direction_choice: str
-    blocks_context: list[dict]
-    blocks_table: list[dict]
-    blocks_organized: list[dict]
+    expressions_content: list[dict]
+    expressions_table: list[dict]
+    blocks: list[dict]
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -247,7 +247,7 @@ def route_after_content_state(state: GraphState) -> str:
     if state.get("content_state") in ("emotional_vague", "dual"):
         return "ask_direction"
     if state.get("content_state") == "emotional_clear":
-        return "retrieve_blocks_context"
+        return "retrieve_expressions_content"
     return "end"
 
 
@@ -270,7 +270,7 @@ def _extract_hit_value(hit, *keys):
     return None
 
 
-def retrieve_blocks_context(state: GraphState) -> dict:
+def retrieve_expressions_content(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     query_text = " ".join(
@@ -281,7 +281,7 @@ def retrieve_blocks_context(state: GraphState) -> dict:
     if not query_text:
         return {
             "internal_audit_log": existing_log
-            + "\nWARNING: no user messages found to build blocks_context query.",
+            + "\nWARNING: no user messages found to build expressions_content query.",
         }
 
     api_key = os.environ.get("PINECONE_API_KEY")
@@ -289,7 +289,7 @@ def retrieve_blocks_context(state: GraphState) -> dict:
     if not api_key or not index_name:
         return {
             "internal_audit_log": existing_log
-            + "\nWARNING: PINECONE_API_KEY/PINECONE_INDEX_NAME not set - skipping blocks context retrieval.",
+            + "\nWARNING: PINECONE_API_KEY/PINECONE_INDEX_NAME not set - skipping expressions content retrieval.",
         }
 
     try:
@@ -316,10 +316,10 @@ def retrieve_blocks_context(state: GraphState) -> dict:
         )
         hits = (results.get("result") or {}).get("hits") or []
 
-        blocks_context = []
+        expressions_content = []
         for hit in hits:
             fields = _extract_hit_value(hit, "fields") or {}
-            blocks_context.append(
+            expressions_content.append(
                 {
                     "id": _extract_hit_value(hit, "_id", "id"),
                     "score": _extract_hit_value(hit, "_score", "score"),
@@ -332,17 +332,17 @@ def retrieve_blocks_context(state: GraphState) -> dict:
     except Exception as exc:
         return {
             "internal_audit_log": existing_log
-            + f"\nWARNING: blocks context retrieval failed: {exc}",
+            + f"\nWARNING: expressions content retrieval failed: {exc}",
         }
 
-    note = f"[retrieve_blocks_context] Retrieved {len(blocks_context)} bank chunks for expression matching."
+    note = f"[retrieve_expressions_content] Retrieved {len(expressions_content)} bank chunks for expression matching."
     return {
-        "blocks_context": blocks_context,
+        "expressions_content": expressions_content,
         "internal_audit_log": existing_log + "\n" + note,
     }
 
 
-def build_blocks_table(state: GraphState) -> dict:
+def build_expressions_table(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     conversation_text = "\n".join(
@@ -350,17 +350,17 @@ def build_blocks_table(state: GraphState) -> dict:
         for m in human_messages
     )
 
-    blocks_context = state.get("blocks_context") or []
+    expressions_content = state.get("expressions_content") or []
     bank_content_text = "\n\n".join(
         f"[{chunk.get('module')} - {chunk.get('chunk_title')}]\n{chunk.get('text')}"
-        for chunk in blocks_context
+        for chunk in expressions_content
     )
 
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
     )
-    structured_llm = llm.with_structured_output(BlocksTableResult)
+    structured_llm = llm.with_structured_output(ExpressionsTableResult)
 
     user_content = (
         f"Client conversation:\n{conversation_text}\n\n"
@@ -370,69 +370,69 @@ def build_blocks_table(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": BUILD_BLOCKS_TABLE_SYSTEM_PROMPT},
+                {"role": "system", "content": BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ]
         )
     except Exception as exc:
         return {
             "internal_audit_log": existing_log
-            + f"\nWARNING: build_blocks_table failed: {exc}",
+            + f"\nWARNING: build_expressions_table failed: {exc}",
         }
 
     rows = [row.model_dump() for row in result.rows]
     bank_count = len({row["bank_name"] for row in rows})
-    note = f"[build_blocks_table] Identified {len(rows)} expressions across {bank_count} banks."
+    note = f"[build_expressions_table] Identified {len(rows)} expressions across {bank_count} banks."
 
     return {
-        "blocks_table": rows,
+        "expressions_table": rows,
         "internal_audit_log": existing_log + "\n" + note,
     }
 
 
-def organize_into_blocks(state: GraphState) -> dict:
+def build_blocks(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    blocks_table = state.get("blocks_table") or []
+    expressions_table = state.get("expressions_table") or []
 
-    if not blocks_table:
+    if not expressions_table:
         return {
             "internal_audit_log": existing_log
-            + "\nWARNING: no blocks_table rows found to organize into blocks.",
+            + "\nWARNING: no expressions_table rows found to build blocks.",
         }
 
     rows_text = "\n".join(
         f"{row.get('row_number')}. expression={row.get('expression')!r}, "
         f"expression_type={row.get('expression_type')}, bank_name={row.get('bank_name')}, "
         f"matched_expression={row.get('matched_expression')!r}, match_level={row.get('match_level')}"
-        for row in blocks_table
+        for row in expressions_table
     )
 
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
     )
-    structured_llm = llm.with_structured_output(OrganizeBlocksResult)
+    structured_llm = llm.with_structured_output(BuildBlocksResult)
 
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": ORGANIZE_INTO_BLOCKS_SYSTEM_PROMPT},
+                {"role": "system", "content": BUILD_BLOCKS_SYSTEM_PROMPT},
                 {"role": "user", "content": rows_text},
             ]
         )
     except Exception as exc:
         return {
             "internal_audit_log": existing_log
-            + f"\nWARNING: organize_into_blocks failed: {exc}",
+            + f"\nWARNING: build_blocks failed: {exc}",
         }
 
     blocks = [block.model_dump() for block in result.blocks]
     rows = [row.model_dump() for row in result.rows]
-    note = f"[organize_into_blocks] Organized {len(rows)} rows into {len(blocks)} blocks."
+    note = f"[build_blocks] Organized {len(rows)} rows into {len(blocks)} blocks."
 
     return {
-        "blocks_organized": blocks,
-        "blocks_table": rows,
+        "blocks": blocks,
+        "expressions_table": rows,
         "internal_audit_log": existing_log + "\n" + note,
     }
 
@@ -492,9 +492,9 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_content_state", classify_content_state)
     graph_builder.add_node("ask_direction", ask_direction)
     graph_builder.add_node("classify_direction_choice", classify_direction_choice)
-    graph_builder.add_node("retrieve_blocks_context", retrieve_blocks_context)
-    graph_builder.add_node("build_blocks_table", build_blocks_table)
-    graph_builder.add_node("organize_into_blocks", organize_into_blocks)
+    graph_builder.add_node("retrieve_expressions_content", retrieve_expressions_content)
+    graph_builder.add_node("build_expressions_table", build_expressions_table)
+    graph_builder.add_node("build_blocks", build_blocks)
 
     graph_builder.add_conditional_edges(
         START,
@@ -527,15 +527,15 @@ def build_graph_builder() -> StateGraph:
         route_after_content_state,
         {
             "ask_direction": "ask_direction",
-            "retrieve_blocks_context": "retrieve_blocks_context",
+            "retrieve_expressions_content": "retrieve_expressions_content",
             "end": END,
         },
     )
     graph_builder.add_edge("ask_direction", END)
     graph_builder.add_edge("classify_direction_choice", END)
-    graph_builder.add_edge("retrieve_blocks_context", "build_blocks_table")
-    graph_builder.add_edge("build_blocks_table", "organize_into_blocks")
-    graph_builder.add_edge("organize_into_blocks", END)
+    graph_builder.add_edge("retrieve_expressions_content", "build_expressions_table")
+    graph_builder.add_edge("build_expressions_table", "build_blocks")
+    graph_builder.add_edge("build_blocks", END)
 
     return graph_builder
 
