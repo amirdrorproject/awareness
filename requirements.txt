@@ -6,4 +6,4 @@ langgraph
 langchain-anthropic
 langgraph-checkpoint-postgres
 psycopg[binary,pool]
-pinecone
+pinecone==9.1.0
