@@ -47,6 +47,8 @@ BUILD_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into 
 
 COLOR_BLOCKS_SYSTEM_PROMPT = """For each block, determine if there is a clear emotional color. As a default, you choose the color word - but if the client's own wording (visible in the expressions table below) already contains a fitting emotional word, it's fine to use that instead. If no clear emotional color applies, set color to exactly "לא חד משמעי" - don't force a color when it's not clearly there; when in doubt, prefer not coloring. Example color words for reference (not exhaustive): באסה, מבאס, לא נעים, מתסכל, לחוץ, לא קל, מורכב."""
 
+PRESENT_AND_ASK_SYSTEM_PROMPT = """You are presenting a list of topic blocks to the client in Hebrew, based on what emerged from their message. Present each block as its own item, phrased naturally from its topic. For any block whose color is not "לא חד משמעי", weave that color word naturally into the presentation of that block - for blocks marked "לא חד משמעי", just present the topic plainly, with no color mentioned. After presenting all the blocks, ask this exact question, verbatim: "רוצה קודם שנעמיק באחד מהם, או שכבר ברור לך הכיוון של מה שחשוב לך לעבוד עליו?" Respond with the presentation and the question only, in Hebrew, nothing else."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -510,6 +512,40 @@ def color_blocks(state: GraphState) -> dict:
     }
 
 
+def present_and_ask(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    blocks = state.get("blocks") or []
+
+    if not blocks:
+        return {
+            "internal_audit_log": existing_log + "\nWARNING: no blocks found to present.",
+        }
+
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
+        for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": PRESENT_AND_ASK_SYSTEM_PROMPT},
+            {"role": "user", "content": blocks_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = f"[present_and_ask] Presented {len(blocks)} blocks and asked management question."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -569,6 +605,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("build_expressions_table", build_expressions_table)
     graph_builder.add_node("build_blocks", build_blocks)
     graph_builder.add_node("color_blocks", color_blocks)
+    graph_builder.add_node("present_and_ask", present_and_ask)
 
     graph_builder.add_conditional_edges(
         START,
@@ -610,7 +647,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_edge("retrieve_expressions_content", "build_expressions_table")
     graph_builder.add_edge("build_expressions_table", "build_blocks")
     graph_builder.add_edge("build_blocks", "color_blocks")
-    graph_builder.add_edge("color_blocks", END)
+    graph_builder.add_edge("color_blocks", "present_and_ask")
+    graph_builder.add_edge("present_and_ask", END)
 
     return graph_builder
 
