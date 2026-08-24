@@ -56,6 +56,20 @@ If deepening and the client specified which block (by topic or otherwise identif
 
 ASK_WHICH_BLOCK_SYSTEM_PROMPT = """The client indicated they want to deepen on one of the presented blocks but did not specify which one. Ask a short question, in Hebrew, asking which block they'd like to expand on - reference the actual block topics provided below in the question, not generic placeholders. Respond with the question only, in Hebrew, nothing else."""
 
+DEEPEN_ROUND_SYSTEM_PROMPT = """The client is deepening on one specific block in an ongoing conversation. Scan the client's new message below for emotionally meaningful expressions - explicit, implied, or physical/somatic (same criteria as before). For each expression:
+- If it is a new expression not already covered by the existing table below, add it as a new row in new_rows.
+- If it is an expansion of an existing row's expression, do NOT add a new row for it - UNLESS it reveals a new layer or nuance not covered by the existing row, in which case add a new row for that new layer only.
+- Match each new expression against the bank content already reflected in the existing table (bank_name/matched_expression) or reasonable extensions of it - do not invent unfounded matches.
+
+Then, for each new or affected block:
+- If the new content fits an existing block from the list below, return that block in block_updates with the SAME block_id, with its topic expanded if needed to reflect the new content.
+- If the new content requires a new block, return it in block_updates with a NEW block_id (one higher than the highest existing block_id) and a short, factual-neutral topic.
+- Only include blocks that are new or changed in block_updates - do not return unchanged blocks.
+
+If nothing new was found this round, return empty lists for new_rows and block_updates."""
+
+DEEPEN_REPLY_SYSTEM_PROMPT = """You are replying briefly in Hebrew after the client added more to a block they are deepening on. Reflect back what they just added, using their own words/phrasing as provided below - not new interpretive language of your own - a short acknowledgment, not a full restatement. Then invite them to add more if there's anything else, or to move on when ready. Respond with the reflection and invitation only, in Hebrew, nothing else."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -115,6 +129,12 @@ class PresentChoiceResult(BaseModel):
     current_block_id: int | None = None
 
 
+class DeepenRoundResult(BaseModel):
+    reasoning: str
+    new_rows: list[TableRow]
+    block_updates: list[Block]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -126,6 +146,8 @@ class GraphState(MessagesState):
     intent: str
     current_block_id: int | None
     deepen_round_count: int
+    deepen_round_new_rows: list[dict]
+    deepen_round_block_updates: list[dict]
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -646,6 +668,124 @@ def ask_which_block(state: GraphState) -> dict:
     }
 
 
+def deepen_round(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found for deepen round.",
+        }
+
+    last_message = user_messages[-1].content
+    expressions_table = state.get("expressions_table") or []
+    blocks = state.get("blocks") or []
+    current_block_id = state.get("current_block_id")
+
+    table_text = "\n".join(
+        f"{row.get('row_number')}. block_id={row.get('block_id')}, expression={row.get('expression')!r}, "
+        f"expression_type={row.get('expression_type')}, bank_name={row.get('bank_name')}, "
+        f"matched_expression={row.get('matched_expression')!r}, match_level={row.get('match_level')}"
+        for row in expressions_table
+    )
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
+        for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(DeepenRoundResult)
+
+    user_content = (
+        f"Currently deepening on block_id={current_block_id}.\n\n"
+        f"Existing expressions table:\n{table_text}\n\n"
+        f"Existing blocks:\n{blocks_text}\n\n"
+        f"Client's new message:\n{last_message}"
+    )
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": DEEPEN_ROUND_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log + f"\nWARNING: deepen_round failed: {exc}",
+        }
+
+    next_row_number = len(expressions_table) + 1
+    new_rows = []
+    for offset, row in enumerate(result.new_rows):
+        row_dict = row.model_dump()
+        row_dict["row_number"] = next_row_number + offset
+        new_rows.append(row_dict)
+
+    block_updates = [block.model_dump() for block in result.block_updates]
+    blocks_by_id = {block.get("block_id"): dict(block) for block in blocks}
+    for block_dict in block_updates:
+        blocks_by_id[block_dict["block_id"]] = block_dict
+    updated_blocks = list(blocks_by_id.values())
+
+    round_number = (state.get("deepen_round_count") or 0) + 1
+    note = (
+        f"[deepen_round] Round {round_number}: added {len(new_rows)} new expressions, "
+        f"{len(block_updates)} block updates."
+    )
+
+    return {
+        "expressions_table": expressions_table + new_rows,
+        "blocks": updated_blocks,
+        "deepen_round_new_rows": new_rows,
+        "deepen_round_block_updates": block_updates,
+        "deepen_round_count": round_number,
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
+def deepen_reply(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    round_count = state.get("deepen_round_count") or 0
+
+    if round_count >= 2:
+        note = f"[deepen_reply] Round {round_count} reached - no response generated (stage 6 not yet built)."
+        return {
+            "internal_audit_log": existing_log + "\n" + note,
+        }
+
+    new_rows = state.get("deepen_round_new_rows") or []
+    block_updates = state.get("deepen_round_block_updates") or []
+
+    additions_text = "\n".join(f"- {row.get('expression')!r}" for row in new_rows)
+    blocks_text = "\n".join(f"- {block.get('topic')!r}" for block in block_updates)
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": DEEPEN_REPLY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"New expressions this round:\n{additions_text}\n\nAffected blocks:\n{blocks_text}",
+            },
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = f"[deepen_reply] Round {round_count}: reflected back {len(new_rows)} new expressions and invited more or moving on."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -694,6 +834,12 @@ def route_from_start(state: GraphState) -> str:
         and state.get("intent") is None
     ):
         return "classify_present_choice"  # present_and_ask just asked its question - classify the reply
+    if (
+        state.get("intent") == "deepen"
+        and state.get("current_block_id") is not None
+        and (state.get("deepen_round_count") or 0) < 2
+    ):
+        return "deepen_round"  # deepening on a block - classify what the client just added
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
     return "classify_opening"  # first turn - no opening_status yet
@@ -714,6 +860,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("present_and_ask", present_and_ask)
     graph_builder.add_node("classify_present_choice", classify_present_choice)
     graph_builder.add_node("ask_which_block", ask_which_block)
+    graph_builder.add_node("deepen_round", deepen_round)
+    graph_builder.add_node("deepen_reply", deepen_reply)
 
     graph_builder.add_conditional_edges(
         START,
@@ -723,6 +871,7 @@ def build_graph_builder() -> StateGraph:
             "classify_content_state": "classify_content_state",
             "classify_direction_choice": "classify_direction_choice",
             "classify_present_choice": "classify_present_choice",
+            "deepen_round": "deepen_round",
         },
     )
     graph_builder.add_conditional_edges(
@@ -767,6 +916,8 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("ask_which_block", END)
+    graph_builder.add_edge("deepen_round", "deepen_reply")
+    graph_builder.add_edge("deepen_reply", END)
 
     return graph_builder
 
