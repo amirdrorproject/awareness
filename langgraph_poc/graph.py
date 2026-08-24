@@ -72,6 +72,10 @@ If nothing new was found this round, return empty lists for new_rows and block_u
 
 DEEPEN_REPLY_SYSTEM_PROMPT = """You are replying briefly in Hebrew after the client added more to a block they are deepening on. Reflect back what they just added, using their own words/phrasing as provided below - not new interpretive language of your own - a short acknowledgment, not a full restatement. Then invite them to add more if there's anything else, or to move on when ready. Respond with the reflection and invitation only, in Hebrew, nothing else."""
 
+FOCUS_ON_BLOCK_SYSTEM_PROMPT = """Ask the client, in Hebrew, which of the presented blocks feels most emotionally significant right now, referencing the actual block topics provided below - not generic placeholders. Follow this pattern, adapted naturally to the actual topics given: "מבין [topic 1] / [topic 2] / [topic 3] — מה הכי משמעותי רגשית עכשיו?" Respond with the question only, in Hebrew, nothing else."""
+
+CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT = """The client was just asked which of the presented blocks feels most emotionally significant right now. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they chose."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -142,6 +146,11 @@ class DeepenRoundResult(BaseModel):
     block_updates: list[Block]
 
 
+class FocusChoiceResult(BaseModel):
+    reasoning: str
+    current_block_id: int
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -152,6 +161,7 @@ class GraphState(MessagesState):
     blocks: list[dict]
     intent: str
     current_block_id: int | None
+    block_chosen_unprompted: bool
     deepen_round_count: int
     deepen_round_new_rows: list[dict]
     deepen_round_block_updates: list[dict]
@@ -666,6 +676,7 @@ def classify_present_choice(state: GraphState) -> dict:
     return {
         "intent": result.intent,
         "current_block_id": result.current_block_id,
+        "block_chosen_unprompted": result.current_block_id is not None,
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "classify_present_choice",
     }
@@ -778,6 +789,7 @@ def classify_block_target(state: GraphState) -> dict:
 
     return {
         "current_block_id": result.current_block_id,
+        "block_chosen_unprompted": False,
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "classify_block_target",
     }
@@ -912,6 +924,129 @@ def deepen_reply(state: GraphState) -> dict:
     }
 
 
+def focus_on_block(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+
+    if state.get("block_chosen_unprompted"):
+        note = (
+            f"[focus_on_block] Skipped - client already named block "
+            f"{state.get('current_block_id')} unprompted via classify_present_choice."
+        )
+        return {
+            "internal_audit_log": existing_log + "\n" + note,
+            "last_visited_node": "focus_on_block",
+        }
+
+    blocks = state.get("blocks") or []
+    if not blocks:
+        return {
+            "internal_audit_log": existing_log + "\nWARNING: no blocks found to focus on.",
+            "last_visited_node": "focus_on_block",
+        }
+
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": FOCUS_ON_BLOCK_SYSTEM_PROMPT},
+            {"role": "user", "content": blocks_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[focus_on_block] Asked client which block feels most emotionally significant now."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "focus_on_block",
+    }
+
+
+def classify_focus_choice(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify focus choice.",
+            "last_visited_node": "classify_focus_choice",
+        }
+
+    last_message = user_messages[-1].content
+    blocks = state.get("blocks") or []
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(FocusChoiceResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
+                },
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: focus choice classification failed: {exc}",
+            "last_visited_node": "classify_focus_choice",
+        }
+
+    valid_block_ids = {block.get("block_id") for block in blocks}
+    if result.current_block_id not in valid_block_ids:
+        # The model didn't return a block_id that actually exists - fall back to
+        # asking again, same wording/pattern as focus_on_block, rather than
+        # silently accepting a hallucinated target.
+        clarify_llm = ChatAnthropic(
+            model=CLASSIFICATION_MODEL,
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        )
+        clarify_response = clarify_llm.invoke(
+            [
+                {"role": "system", "content": FOCUS_ON_BLOCK_SYSTEM_PROMPT},
+                {"role": "user", "content": blocks_text},
+            ]
+        )
+        clarify_text = (
+            clarify_response.content
+            if isinstance(clarify_response.content, str)
+            else str(clarify_response.content)
+        )
+        note = (
+            f"WARNING: classify_focus_choice returned block_id={result.current_block_id!r}, "
+            "which doesn't match any known block - asking client to clarify."
+        )
+        return {
+            "messages": [AIMessage(content=clarify_text)],
+            "internal_audit_log": existing_log + "\n" + note,
+            "last_visited_node": "classify_focus_choice",
+        }
+
+    note = f"[classify_focus_choice] Client focused on block {result.current_block_id}."
+
+    return {
+        "current_block_id": result.current_block_id,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_focus_choice",
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -966,7 +1101,15 @@ def route_from_start(state: GraphState) -> str:
     if last == "deepen_reply":
         if (state.get("deepen_round_count") or 0) < 2:
             return "deepen_round"  # more deepening to do
-        return "classify_content_state"  # stage 6 not built yet - known gap, same pattern as elsewhere
+        return "focus_on_block"  # deepening exhausted - move to emotional focus
+
+    if last == "classify_focus_choice":
+        return "classify_focus_choice"  # invalid block match last time - re-ask and reclassify
+
+    if last == "focus_on_block" and not state.get("block_chosen_unprompted"):
+        return "classify_focus_choice"  # focus_on_block asked its question - classify the reply
+        # (if block_chosen_unprompted is True, focus_on_block skipped silently and asked
+        # nothing - falls through below, same as any other "nothing left to do yet" turn)
 
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
@@ -991,6 +1134,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_block_target", classify_block_target)
     graph_builder.add_node("deepen_round", deepen_round)
     graph_builder.add_node("deepen_reply", deepen_reply)
+    graph_builder.add_node("focus_on_block", focus_on_block)
+    graph_builder.add_node("classify_focus_choice", classify_focus_choice)
 
     graph_builder.add_conditional_edges(
         START,
@@ -1002,6 +1147,8 @@ def build_graph_builder() -> StateGraph:
             "classify_present_choice": "classify_present_choice",
             "classify_block_target": "classify_block_target",
             "deepen_round": "deepen_round",
+            "focus_on_block": "focus_on_block",
+            "classify_focus_choice": "classify_focus_choice",
         },
     )
     graph_builder.add_conditional_edges(
@@ -1056,6 +1203,8 @@ def build_graph_builder() -> StateGraph:
     )
     graph_builder.add_edge("deepen_round", "deepen_reply")
     graph_builder.add_edge("deepen_reply", END)
+    graph_builder.add_edge("focus_on_block", END)
+    graph_builder.add_edge("classify_focus_choice", END)
 
     return graph_builder
 
