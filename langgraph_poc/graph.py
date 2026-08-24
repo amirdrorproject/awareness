@@ -76,6 +76,13 @@ FOCUS_ON_BLOCK_SYSTEM_PROMPT = """Ask the client, in Hebrew, which of the presen
 
 CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT = """The client was just asked which of the presented blocks feels most emotionally significant right now. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they chose."""
 
+CLASSIFY_READINESS_SYSTEM_PROMPT = """Assess the client's readiness to explore the focused block further, based on their messages throughout the conversation so far:
+- ready: extended responses, willingness to share, connecting ideas, first-person emotional statements ("אני מרגיש", "כואב לי").
+- half_ready: openness but also reservations - appropriate to process the event, but maybe not yet ready to explore it as a recurring pattern.
+- not_ready: short responses, reverting to practical, "מה אני יכול לעשות"."""
+
+SUMMARIZE_AND_PIVOT_SYSTEM_PROMPT = """Summarize the blocks and their colors provided below briefly, in Hebrew, and note that the conversation is moving toward practical work from here. Keep it as a natural closing summary - do not promise specific next steps that haven't been built. Respond with the summary only, in Hebrew, nothing else."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -151,6 +158,11 @@ class FocusChoiceResult(BaseModel):
     current_block_id: int
 
 
+class ReadinessResult(BaseModel):
+    reasoning: str
+    readiness: Literal["ready", "half_ready", "not_ready"]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -165,6 +177,7 @@ class GraphState(MessagesState):
     deepen_round_count: int
     deepen_round_new_rows: list[dict]
     deepen_round_block_updates: list[dict]
+    readiness: str
     last_visited_node: str | None
 
 
@@ -1046,6 +1059,99 @@ def classify_focus_choice(state: GraphState) -> dict:
     }
 
 
+def route_after_focus_choice(state: GraphState) -> str:
+    messages = state.get("messages") or []
+    if messages and isinstance(messages[-1], AIMessage):
+        return "end"  # fallback re-ask just happened - wait for the client's next reply
+    return "classify_readiness"  # current_block_id was successfully updated - continue immediately
+
+
+def classify_readiness(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not human_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user messages found to assess readiness.",
+            "last_visited_node": "classify_readiness",
+        }
+
+    conversation_text = "\n".join(
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in human_messages
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(ReadinessResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_READINESS_SYSTEM_PROMPT},
+                {"role": "user", "content": conversation_text},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: readiness classification failed: {exc}",
+            "last_visited_node": "classify_readiness",
+        }
+
+    note = f"[classify_readiness] Assessed readiness: {result.readiness}."
+
+    return {
+        "readiness": result.readiness,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_readiness",
+    }
+
+
+def route_after_readiness(state: GraphState) -> str:
+    if state.get("readiness") == "not_ready":
+        return "summarize_and_pivot"
+    return "end"
+
+
+def summarize_and_pivot(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    blocks = state.get("blocks") or []
+
+    if not blocks:
+        return {
+            "internal_audit_log": existing_log + "\nWARNING: no blocks found to summarize.",
+            "last_visited_node": "summarize_and_pivot",
+        }
+
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
+        for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": SUMMARIZE_AND_PIVOT_SYSTEM_PROMPT},
+            {"role": "user", "content": blocks_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[summarize_and_pivot] Summarized blocks/colors and pivoted toward practical work."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "summarize_and_pivot",
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -1136,6 +1242,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("deepen_reply", deepen_reply)
     graph_builder.add_node("focus_on_block", focus_on_block)
     graph_builder.add_node("classify_focus_choice", classify_focus_choice)
+    graph_builder.add_node("classify_readiness", classify_readiness)
+    graph_builder.add_node("summarize_and_pivot", summarize_and_pivot)
 
     graph_builder.add_conditional_edges(
         START,
@@ -1211,7 +1319,23 @@ def build_graph_builder() -> StateGraph:
     )
     graph_builder.add_edge("deepen_reply", END)
     graph_builder.add_edge("focus_on_block", END)
-    graph_builder.add_edge("classify_focus_choice", END)
+    graph_builder.add_conditional_edges(
+        "classify_focus_choice",
+        route_after_focus_choice,
+        {
+            "classify_readiness": "classify_readiness",
+            "end": END,
+        },
+    )
+    graph_builder.add_conditional_edges(
+        "classify_readiness",
+        route_after_readiness,
+        {
+            "summarize_and_pivot": "summarize_and_pivot",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("summarize_and_pivot", END)
 
     return graph_builder
 
