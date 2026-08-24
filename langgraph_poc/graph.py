@@ -49,6 +49,13 @@ COLOR_BLOCKS_SYSTEM_PROMPT = """For each block, determine if there is a clear em
 
 PRESENT_AND_ASK_SYSTEM_PROMPT = """You are presenting a list of topic blocks to the client in Hebrew, based on what emerged from their message. Present each block as its own item, phrased naturally from its topic. For any block whose color is not "לא חד משמעי", weave that color word naturally into the presentation of that block - for blocks marked "לא חד משמעי", just present the topic plainly, with no color mentioned. After presenting all the blocks, ask this exact question, verbatim: "רוצה קודם שנעמיק באחד מהם, או שכבר ברור לך הכיוון של מה שחשוב לך לעבוד עליו?" Respond with the presentation and the question only, in Hebrew, nothing else."""
 
+CLASSIFY_PRESENT_CHOICE_SYSTEM_PROMPT = """The client was just presented with a list of topic blocks and asked whether they want to deepen on one of them or already know the direction of what's important to work on. Classify their reply:
+- intent = 'practical' if they want to move to practical work / already know what they want to work on.
+- intent = 'deepen' if they want to deepen/explore one of the blocks first.
+If deepening and the client specified which block (by topic or otherwise identifiable reference), set current_block_id to that block's block_id, matching against the blocks provided below. If deepening without specifying which block, leave current_block_id as null."""
+
+ASK_WHICH_BLOCK_SYSTEM_PROMPT = """The client indicated they want to deepen on one of the presented blocks but did not specify which one. Ask a short question, in Hebrew, asking which block they'd like to expand on - reference the actual block topics provided below in the question, not generic placeholders. Respond with the question only, in Hebrew, nothing else."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -102,6 +109,12 @@ class ColorBlocksResult(BaseModel):
     colors: list[BlockColorAssignment]
 
 
+class PresentChoiceResult(BaseModel):
+    reasoning: str
+    intent: Literal["practical", "deepen"]
+    current_block_id: int | None = None
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -110,6 +123,9 @@ class GraphState(MessagesState):
     expressions_content: list[dict]
     expressions_table: list[dict]
     blocks: list[dict]
+    intent: str
+    current_block_id: int | None
+    deepen_round_count: int
 
 
 def classify_opening(state: GraphState) -> dict:
@@ -546,6 +562,90 @@ def present_and_ask(state: GraphState) -> dict:
     }
 
 
+def classify_present_choice(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify present choice.",
+        }
+
+    last_message = user_messages[-1].content
+    blocks = state.get("blocks") or []
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(PresentChoiceResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_PRESENT_CHOICE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
+                },
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: present choice classification failed: {exc}",
+        }
+
+    block_suffix = (
+        f", targeting block {result.current_block_id}"
+        if result.current_block_id is not None
+        else ""
+    )
+    note = f"[classify_present_choice] Client chose {result.intent}{block_suffix}."
+
+    return {
+        "intent": result.intent,
+        "current_block_id": result.current_block_id,
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
+def route_after_present_choice(state: GraphState) -> str:
+    if state.get("intent") == "deepen" and state.get("current_block_id") is None:
+        return "ask_which_block"
+    return "end"
+
+
+def ask_which_block(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    blocks = state.get("blocks") or []
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": ASK_WHICH_BLOCK_SYSTEM_PROMPT},
+            {"role": "user", "content": blocks_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[ask_which_block] Asked client to specify which block to deepen on."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+
+
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -588,6 +688,12 @@ def route_from_start(state: GraphState) -> str:
         and state.get("direction_choice") is None
     ):
         return "classify_direction_choice"  # ask_direction just asked a question - classify the reply
+    if (
+        state.get("content_state") == "emotional_clear"
+        and state.get("blocks")
+        and state.get("intent") is None
+    ):
+        return "classify_present_choice"  # present_and_ask just asked its question - classify the reply
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
     return "classify_opening"  # first turn - no opening_status yet
@@ -606,6 +712,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("build_blocks", build_blocks)
     graph_builder.add_node("color_blocks", color_blocks)
     graph_builder.add_node("present_and_ask", present_and_ask)
+    graph_builder.add_node("classify_present_choice", classify_present_choice)
+    graph_builder.add_node("ask_which_block", ask_which_block)
 
     graph_builder.add_conditional_edges(
         START,
@@ -614,6 +722,7 @@ def build_graph_builder() -> StateGraph:
             "classify_opening": "classify_opening",
             "classify_content_state": "classify_content_state",
             "classify_direction_choice": "classify_direction_choice",
+            "classify_present_choice": "classify_present_choice",
         },
     )
     graph_builder.add_conditional_edges(
@@ -649,6 +758,15 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_edge("build_blocks", "color_blocks")
     graph_builder.add_edge("color_blocks", "present_and_ask")
     graph_builder.add_edge("present_and_ask", END)
+    graph_builder.add_conditional_edges(
+        "classify_present_choice",
+        route_after_present_choice,
+        {
+            "ask_which_block": "ask_which_block",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("ask_which_block", END)
 
     return graph_builder
 
