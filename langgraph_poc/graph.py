@@ -56,6 +56,8 @@ If deepening and the client specified which block (by topic or otherwise identif
 
 ASK_WHICH_BLOCK_SYSTEM_PROMPT = """The client indicated they want to deepen on one of the presented blocks but did not specify which one. Ask a short question, in Hebrew, asking which block they'd like to expand on - reference the actual block topics provided below in the question, not generic placeholders. Respond with the question only, in Hebrew, nothing else."""
 
+CLASSIFY_BLOCK_TARGET_SYSTEM_PROMPT = """The client was just asked which block they would like to expand on. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they are referring to."""
+
 DEEPEN_ROUND_SYSTEM_PROMPT = """The client is deepening on one specific block in an ongoing conversation. Scan the client's new message below for emotionally meaningful expressions - explicit, implied, or physical/somatic (same criteria as before). For each expression:
 - If it is a new expression not already covered by the existing table below, add it as a new row in new_rows.
 - If it is an expansion of an existing row's expression, do NOT add a new row for it - UNLESS it reveals a new layer or nuance not covered by the existing row, in which case add a new row for that new layer only.
@@ -129,6 +131,11 @@ class PresentChoiceResult(BaseModel):
     current_block_id: int | None = None
 
 
+class BlockTargetResult(BaseModel):
+    reasoning: str
+    current_block_id: int
+
+
 class DeepenRoundResult(BaseModel):
     reasoning: str
     new_rows: list[TableRow]
@@ -148,12 +155,16 @@ class GraphState(MessagesState):
     deepen_round_count: int
     deepen_round_new_rows: list[dict]
     deepen_round_block_updates: list[dict]
+    last_visited_node: str | None
 
 
 def classify_opening(state: GraphState) -> dict:
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     if not user_messages:
-        return {"internal_audit_log": "WARNING: no user message found to classify."}
+        return {
+            "internal_audit_log": "WARNING: no user message found to classify.",
+            "last_visited_node": "classify_opening",
+        }
 
     first_message = user_messages[0].content
 
@@ -173,11 +184,13 @@ def classify_opening(state: GraphState) -> dict:
     except Exception as exc:
         return {
             "internal_audit_log": f"WARNING: opening classification failed: {exc}",
+            "last_visited_node": "classify_opening",
         }
 
     return {
         "internal_audit_log": result.reasoning,
         "opening_status": result.mode,
+        "last_visited_node": "classify_opening",
     }
 
 
@@ -194,6 +207,7 @@ def respond_direct(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+        "last_visited_node": "respond_direct",
     }
 
 
@@ -221,6 +235,7 @@ def respond_with_check(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+        "last_visited_node": "respond_with_check",
     }
 
 
@@ -237,6 +252,7 @@ def classify_content_state(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no user message found to classify content state.",
+            "last_visited_node": "classify_content_state",
         }
 
     last_message = user_messages[-1].content
@@ -258,11 +274,13 @@ def classify_content_state(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: content state classification failed: {exc}",
+            "last_visited_node": "classify_content_state",
         }
 
     return {
         "internal_audit_log": existing_log + "\n" + result.reasoning,
         "content_state": result.state,
+        "last_visited_node": "classify_content_state",
     }
 
 
@@ -293,6 +311,7 @@ def ask_direction(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+        "last_visited_node": "ask_direction",
     }
 
 
@@ -335,6 +354,7 @@ def retrieve_expressions_content(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no user messages found to build expressions_content query.",
+            "last_visited_node": "retrieve_expressions_content",
         }
 
     api_key = os.environ.get("PINECONE_API_KEY")
@@ -343,6 +363,7 @@ def retrieve_expressions_content(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: PINECONE_API_KEY/PINECONE_INDEX_NAME not set - skipping expressions content retrieval.",
+            "last_visited_node": "retrieve_expressions_content",
         }
 
     try:
@@ -386,12 +407,14 @@ def retrieve_expressions_content(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: expressions content retrieval failed: {exc}",
+            "last_visited_node": "retrieve_expressions_content",
         }
 
     note = f"[retrieve_expressions_content] Retrieved {len(expressions_content)} bank chunks for expression matching."
     return {
         "expressions_content": expressions_content,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "retrieve_expressions_content",
     }
 
 
@@ -431,6 +454,7 @@ def build_expressions_table(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: build_expressions_table failed: {exc}",
+            "last_visited_node": "build_expressions_table",
         }
 
     rows = [row.model_dump() for row in result.rows]
@@ -440,6 +464,7 @@ def build_expressions_table(state: GraphState) -> dict:
     return {
         "expressions_table": rows,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "build_expressions_table",
     }
 
 
@@ -451,6 +476,7 @@ def build_blocks(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no expressions_table rows found to build blocks.",
+            "last_visited_node": "build_blocks",
         }
 
     rows_text = "\n".join(
@@ -477,6 +503,7 @@ def build_blocks(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: build_blocks failed: {exc}",
+            "last_visited_node": "build_blocks",
         }
 
     blocks = [block.model_dump() for block in result.blocks]
@@ -487,6 +514,7 @@ def build_blocks(state: GraphState) -> dict:
         "blocks": blocks,
         "expressions_table": rows,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "build_blocks",
     }
 
 
@@ -498,6 +526,7 @@ def color_blocks(state: GraphState) -> dict:
     if not blocks:
         return {
             "internal_audit_log": existing_log + "\nWARNING: no blocks found to color.",
+            "last_visited_node": "color_blocks",
         }
 
     blocks_text = "\n".join(
@@ -529,6 +558,7 @@ def color_blocks(state: GraphState) -> dict:
     except Exception as exc:
         return {
             "internal_audit_log": existing_log + f"\nWARNING: color_blocks failed: {exc}",
+            "last_visited_node": "color_blocks",
         }
 
     colors_by_block_id = {c.block_id: c.color for c in result.colors}
@@ -547,6 +577,7 @@ def color_blocks(state: GraphState) -> dict:
     return {
         "blocks": updated_blocks,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "color_blocks",
     }
 
 
@@ -557,6 +588,7 @@ def present_and_ask(state: GraphState) -> dict:
     if not blocks:
         return {
             "internal_audit_log": existing_log + "\nWARNING: no blocks found to present.",
+            "last_visited_node": "present_and_ask",
         }
 
     blocks_text = "\n".join(
@@ -581,6 +613,7 @@ def present_and_ask(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "present_and_ask",
     }
 
 
@@ -591,6 +624,7 @@ def classify_present_choice(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no user message found to classify present choice.",
+            "last_visited_node": "classify_present_choice",
         }
 
     last_message = user_messages[-1].content
@@ -619,6 +653,7 @@ def classify_present_choice(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: present choice classification failed: {exc}",
+            "last_visited_node": "classify_present_choice",
         }
 
     block_suffix = (
@@ -632,6 +667,7 @@ def classify_present_choice(state: GraphState) -> dict:
         "intent": result.intent,
         "current_block_id": result.current_block_id,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_present_choice",
     }
 
 
@@ -665,7 +701,92 @@ def ask_which_block(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "ask_which_block",
     }
+
+
+def classify_block_target(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify block target.",
+            "last_visited_node": "classify_block_target",
+        }
+
+    last_message = user_messages[-1].content
+    blocks = state.get("blocks") or []
+    blocks_text = "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(BlockTargetResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_BLOCK_TARGET_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
+                },
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: block target classification failed: {exc}",
+            "last_visited_node": "classify_block_target",
+        }
+
+    valid_block_ids = {block.get("block_id") for block in blocks}
+    if result.current_block_id not in valid_block_ids:
+        # The model didn't return a block_id that actually exists - fall back to
+        # asking again, same wording/pattern as ask_which_block, rather than
+        # silently accepting a hallucinated target.
+        clarify_llm = ChatAnthropic(
+            model=CLASSIFICATION_MODEL,
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        )
+        clarify_response = clarify_llm.invoke(
+            [
+                {"role": "system", "content": ASK_WHICH_BLOCK_SYSTEM_PROMPT},
+                {"role": "user", "content": blocks_text},
+            ]
+        )
+        clarify_text = (
+            clarify_response.content
+            if isinstance(clarify_response.content, str)
+            else str(clarify_response.content)
+        )
+        note = (
+            f"WARNING: classify_block_target returned block_id={result.current_block_id!r}, "
+            "which doesn't match any known block - asking client to clarify."
+        )
+        return {
+            "messages": [AIMessage(content=clarify_text)],
+            "internal_audit_log": existing_log + "\n" + note,
+            "last_visited_node": "classify_block_target",
+        }
+
+    note = f"[classify_block_target] Identified target block: {result.current_block_id}."
+
+    return {
+        "current_block_id": result.current_block_id,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_block_target",
+    }
+
+
+def route_after_block_target(state: GraphState) -> str:
+    if state.get("current_block_id") is not None and (state.get("deepen_round_count") or 0) < 2:
+        return "deepen_round"
+    return "end"
 
 
 def deepen_round(state: GraphState) -> dict:
@@ -675,6 +796,7 @@ def deepen_round(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no user message found for deepen round.",
+            "last_visited_node": "deepen_round",
         }
 
     last_message = user_messages[-1].content
@@ -716,6 +838,7 @@ def deepen_round(state: GraphState) -> dict:
     except Exception as exc:
         return {
             "internal_audit_log": existing_log + f"\nWARNING: deepen_round failed: {exc}",
+            "last_visited_node": "deepen_round",
         }
 
     next_row_number = len(expressions_table) + 1
@@ -744,6 +867,7 @@ def deepen_round(state: GraphState) -> dict:
         "deepen_round_block_updates": block_updates,
         "deepen_round_count": round_number,
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "deepen_round",
     }
 
 
@@ -755,6 +879,7 @@ def deepen_reply(state: GraphState) -> dict:
         note = f"[deepen_reply] Round {round_count} reached - no response generated (stage 6 not yet built)."
         return {
             "internal_audit_log": existing_log + "\n" + note,
+            "last_visited_node": "deepen_reply",
         }
 
     new_rows = state.get("deepen_round_new_rows") or []
@@ -783,6 +908,7 @@ def deepen_reply(state: GraphState) -> dict:
     return {
         "messages": [AIMessage(content=response_text)],
         "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "deepen_reply",
     }
 
 
@@ -793,6 +919,7 @@ def classify_direction_choice(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + "\nWARNING: no user message found to classify direction choice.",
+            "last_visited_node": "classify_direction_choice",
         }
 
     last_message = user_messages[-1].content
@@ -814,32 +941,33 @@ def classify_direction_choice(state: GraphState) -> dict:
         return {
             "internal_audit_log": existing_log
             + f"\nWARNING: direction choice classification failed: {exc}",
+            "last_visited_node": "classify_direction_choice",
         }
 
     return {
         "internal_audit_log": existing_log + "\n" + result.reasoning,
         "direction_choice": result.choice,
+        "last_visited_node": "classify_direction_choice",
     }
 
 
 def route_from_start(state: GraphState) -> str:
-    if (
-        state.get("content_state") in ("emotional_vague", "dual")
-        and state.get("direction_choice") is None
-    ):
+    last = state.get("last_visited_node")
+
+    if last == "ask_direction":
         return "classify_direction_choice"  # ask_direction just asked a question - classify the reply
-    if (
-        state.get("content_state") == "emotional_clear"
-        and state.get("blocks")
-        and state.get("intent") is None
-    ):
+
+    if last in ("ask_which_block", "classify_block_target"):
+        return "classify_block_target"  # asked (or re-asked) which block - classify the reply
+
+    if last == "present_and_ask" and state.get("blocks"):
         return "classify_present_choice"  # present_and_ask just asked its question - classify the reply
-    if (
-        state.get("intent") == "deepen"
-        and state.get("current_block_id") is not None
-        and (state.get("deepen_round_count") or 0) < 2
-    ):
-        return "deepen_round"  # deepening on a block - classify what the client just added
+
+    if last == "deepen_reply":
+        if (state.get("deepen_round_count") or 0) < 2:
+            return "deepen_round"  # more deepening to do
+        return "classify_content_state"  # stage 6 not built yet - known gap, same pattern as elsewhere
+
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
     return "classify_opening"  # first turn - no opening_status yet
@@ -860,6 +988,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("present_and_ask", present_and_ask)
     graph_builder.add_node("classify_present_choice", classify_present_choice)
     graph_builder.add_node("ask_which_block", ask_which_block)
+    graph_builder.add_node("classify_block_target", classify_block_target)
     graph_builder.add_node("deepen_round", deepen_round)
     graph_builder.add_node("deepen_reply", deepen_reply)
 
@@ -871,6 +1000,7 @@ def build_graph_builder() -> StateGraph:
             "classify_content_state": "classify_content_state",
             "classify_direction_choice": "classify_direction_choice",
             "classify_present_choice": "classify_present_choice",
+            "classify_block_target": "classify_block_target",
             "deepen_round": "deepen_round",
         },
     )
@@ -916,6 +1046,14 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("ask_which_block", END)
+    graph_builder.add_conditional_edges(
+        "classify_block_target",
+        route_after_block_target,
+        {
+            "deepen_round": "deepen_round",
+            "end": END,
+        },
+    )
     graph_builder.add_edge("deepen_round", "deepen_reply")
     graph_builder.add_edge("deepen_reply", END)
 
