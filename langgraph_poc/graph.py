@@ -883,16 +883,15 @@ def deepen_round(state: GraphState) -> dict:
     }
 
 
+def route_after_deepen_round(state: GraphState) -> str:
+    if (state.get("deepen_round_count") or 0) < 2:
+        return "deepen_reply"
+    return "focus_on_block"
+
+
 def deepen_reply(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     round_count = state.get("deepen_round_count") or 0
-
-    if round_count >= 2:
-        note = f"[deepen_reply] Round {round_count} reached - no response generated (stage 6 not yet built)."
-        return {
-            "internal_audit_log": existing_log + "\n" + note,
-            "last_visited_node": "deepen_reply",
-        }
 
     new_rows = state.get("deepen_round_new_rows") or []
     block_updates = state.get("deepen_round_block_updates") or []
@@ -1099,9 +1098,10 @@ def route_from_start(state: GraphState) -> str:
         return "classify_present_choice"  # present_and_ask just asked its question - classify the reply
 
     if last == "deepen_reply":
-        if (state.get("deepen_round_count") or 0) < 2:
-            return "deepen_round"  # more deepening to do
-        return "focus_on_block"  # deepening exhausted - move to emotional focus
+        # deepen_reply only ever runs when deepen_round_count was < 2 at the time
+        # deepen_round ran (route_after_deepen_round skips straight to focus_on_block
+        # otherwise, in the same turn) - so there's always another round to do here.
+        return "deepen_round"
 
     if last == "classify_focus_choice":
         return "classify_focus_choice"  # invalid block match last time - re-ask and reclassify
@@ -1201,7 +1201,14 @@ def build_graph_builder() -> StateGraph:
             "end": END,
         },
     )
-    graph_builder.add_edge("deepen_round", "deepen_reply")
+    graph_builder.add_conditional_edges(
+        "deepen_round",
+        route_after_deepen_round,
+        {
+            "deepen_reply": "deepen_reply",
+            "focus_on_block": "focus_on_block",
+        },
+    )
     graph_builder.add_edge("deepen_reply", END)
     graph_builder.add_edge("focus_on_block", END)
     graph_builder.add_edge("classify_focus_choice", END)
