@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from fastapi import FastAPI
+from pinecone import Pinecone
 from pydantic import BaseModel
 
 from .chat_langgraph import get_last_assistant_message, run_chat_turn
@@ -20,6 +21,99 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 @app.get("/api/time")
 def get_time():
     return {"time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/pinecone-test")
+def pinecone_test():
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+
+    if not api_key:
+        return {"connected": False, "error": "PINECONE_API_KEY is not set."}
+    if not index_name:
+        return {"connected": False, "error": "PINECONE_INDEX_NAME is not set."}
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+        stats = index.describe_index_stats()
+        return {
+            "connected": True,
+            "vector_count": stats.get("total_vector_count"),
+            "dimension": stats.get("dimension"),
+        }
+    except Exception as exc:
+        return {"connected": False, "error": f"Failed to connect to Pinecone: {exc}"}
+
+
+def _extract_hit_value(hit, *keys):
+    # hit may be a plain dict or a typed SDK object - try dict-style access
+    # (both with and without a leading underscore) before falling back to
+    # attribute-style access, since we can't be certain which this SDK version uses.
+    for key in keys:
+        if isinstance(hit, dict) and key in hit:
+            return hit[key]
+        try:
+            value = hit.get(key)
+        except AttributeError:
+            value = None
+        if value is not None:
+            return value
+        value = getattr(hit, key, None)
+        if value is not None:
+            return value
+    return None
+
+
+@app.get("/api/pinecone-query")
+def pinecone_query(q: str):
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+
+    if not api_key:
+        return {"error": "PINECONE_API_KEY is not set."}
+    if not index_name:
+        return {"error": "PINECONE_INDEX_NAME is not set."}
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+
+        # Auto-detect which namespace actually has data, rather than assuming -
+        # prefer the default namespace if it's populated, else the first populated one.
+        stats = index.describe_index_stats()
+        namespaces = stats.get("namespaces") or {}
+        namespace = ""
+        if not (namespaces.get("") or {}).get("vector_count"):
+            populated = [
+                name for name, info in namespaces.items() if (info or {}).get("vector_count")
+            ]
+            if populated:
+                namespace = populated[0]
+
+        results = index.search(
+            namespace=namespace,
+            query={"inputs": {"text": q}, "top_k": 5},
+        )
+        hits = (results.get("result") or {}).get("hits") or []
+
+        matches = []
+        for hit in hits:
+            fields = _extract_hit_value(hit, "fields") or {}
+            matches.append(
+                {
+                    "id": _extract_hit_value(hit, "_id", "id"),
+                    "score": _extract_hit_value(hit, "_score", "score"),
+                    "text": fields.get("text"),
+                    "module": fields.get("module"),
+                    "chunk_title": fields.get("chunk_title"),
+                    "doc_type": fields.get("doc_type"),
+                }
+            )
+
+        return {"namespace": namespace, "matches": matches}
+    except Exception as exc:
+        return {"error": f"Failed to query Pinecone: {exc}"}
 
 
 class ChatMessage(BaseModel):
