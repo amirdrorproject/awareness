@@ -87,6 +87,24 @@ CLASSIFY_READINESS_SYSTEM_PROMPT = """Assess the client's readiness to explore t
 
 SUMMARIZE_AND_PIVOT_SYSTEM_PROMPT = """Summarize the blocks and their colors provided below briefly, in Hebrew, and note that the conversation is moving toward practical work from here. Keep it as a natural closing summary - do not promise specific next steps that haven't been built. Respond with the summary only, in Hebrew, nothing else."""
 
+PRESENT_SUCCESS_ANALYSIS_INTRO_TEXT = "יכולת היא כמו שריר — כדי שהיא תהיה זמינה וחזקה צריך לזהות ולהכיר אותה. ניתוח של מצבי הצלחה מאפשר להבין איך היכולות שלך פועלות בפועל, ולדייק אותן בשפה שלך. שיטת העבודה תמחיש את זה יותר מכל הסבר. רוצה שננסה?"
+
+EXPLAIN_SUCCESS_VALUE_SYSTEM_PROMPT = """The client declined the invitation to try the success-moment-analysis process. Briefly explain, in Hebrew, the value of the process - without pushing, pressuring, or trying to persuade them to reconsider. Just explain and stop; do not ask again or offer alternatives. Respond with the explanation only, in Hebrew, nothing else."""
+
+INVITE_SUCCESS_STORY_TEXT = "ספר לי על מקרה שבו הייתה לך תחושה של הצלחה / פיצוח / הבנה / פתרון. זה לא חייב להיות קשור לעבודה או אפילו לתוצאה מעשית. אפשר מכל תחום בחיים."
+
+CLASSIFY_SCOPE_CREEP_SYSTEM_PROMPT = """Review the conversation below, which is part of a success-moment-analysis process meant to help the client identify and name their own capabilities from a specific success story they shared. Classify whether the conversation is:
+- in_scope: still about understanding/naming capabilities from the specific story shared.
+- drifting: moving into identity, life meaning, or deep career-direction territory beyond analyzing this specific success story's capabilities."""
+
+PIVOT_TO_DEEPER_PROCESS_TEXT = "אנחנו נוגעים כאן בשאלה עמוקה יותר של זהות או כיוון מקצועי. זה כבר מתאים יותר לתהליך ייעודי. תרצה שנעבור לעסוק בזה במסגרת אחרת?"
+
+SUCCESS_ANALYSIS_CONVERSATION_SYSTEM_PROMPT = """You are guiding a success-moment-analysis conversation, based on a specific success story the client shared. Listen across multiple layers in parallel as the client talks: actions taken, thinking style, inner experience, conditions that enabled the capability, the transition to action, influencing factors, and what counted as success.
+
+Ask only about what's still unclear - never a fixed sequence of questions, and only one question at a time. When a pattern becomes clear, offer it as a hypothesis for the client to confirm or correct - for example: "אני רוצה לבדוק איתך משהו - יכול להיות שהיכולת שבאה כאן לידי ביטוי היא..." - never state it as a fact.
+
+Never give advice, never recommend career directions, never analyze market trends, never compliment or grade. Respond in Hebrew, with the next question or hypothesis only, nothing else."""
+
 
 class OpeningClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen mode")
@@ -172,6 +190,11 @@ class ReadinessResult(BaseModel):
     readiness: Literal["ready", "half_ready", "not_ready"]
 
 
+class ScopeCreepResult(BaseModel):
+    reasoning: str
+    status: Literal["in_scope", "drifting"]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -188,6 +211,9 @@ class GraphState(MessagesState):
     deepen_round_block_updates: list[dict]
     readiness: str
     respond_check_answer: Literal["yes", "no", "other"] | None
+    success_analysis_start_index: int | None
+    success_consent_answer: Literal["yes", "no", "other"] | None
+    scope_creep_status: Literal["in_scope", "drifting"] | None
     last_visited_node: str | None
 
 
@@ -436,7 +462,195 @@ def route_after_content_state(state: GraphState) -> str:
         return "ask_direction"
     if state.get("content_state") == "emotional_clear":
         return "retrieve_expressions_content"
+    if state.get("content_state") == "practical_clear":
+        return "present_success_analysis_intro"
     return "end"
+
+
+def present_success_analysis_intro(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    note = "[present_success_analysis_intro] Presented the success-analysis intro and asked for consent."
+
+    return {
+        "messages": [AIMessage(content=PRESENT_SUCCESS_ANALYSIS_INTRO_TEXT)],
+        "success_analysis_start_index": len(state.get("messages") or []),
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "present_success_analysis_intro",
+    }
+
+
+def classify_success_consent(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify success consent.",
+            "last_visited_node": "classify_success_consent",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: success consent classification failed: {exc}",
+            "last_visited_node": "classify_success_consent",
+        }
+
+    note = f"[classify_success_consent] Client's reply classified as: {answer}."
+
+    return {
+        "success_consent_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_success_consent",
+    }
+
+
+def route_after_success_consent(state: GraphState) -> str:
+    answer = state.get("success_consent_answer")
+    if answer == "yes":
+        return "invite_success_story"
+    if answer == "no":
+        return "explain_success_value"
+    return "classify_scope_creep"  # "other" - they likely already started sharing content
+
+
+def explain_success_value(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    last_message = user_messages[-1].content if user_messages else ""
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": EXPLAIN_SUCCESS_VALUE_SYSTEM_PROMPT},
+            {"role": "user", "content": last_message},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[explain_success_value] Explained the value of the process without pushing further."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "explain_success_value",
+    }
+
+
+def invite_success_story(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    note = "[invite_success_story] Invited the client to share a success story."
+
+    return {
+        "messages": [AIMessage(content=INVITE_SUCCESS_STORY_TEXT)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "invite_success_story",
+    }
+
+
+def _format_conversation(messages) -> str:
+    lines = []
+    for m in messages:
+        role = "Client" if isinstance(m, HumanMessage) else "Assistant"
+        content = m.content if isinstance(m.content, str) else str(m.content)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def classify_scope_creep(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    all_messages = state.get("messages") or []
+    start_index = state.get("success_analysis_start_index")
+    relevant_messages = all_messages[start_index:] if start_index is not None else all_messages
+
+    if not relevant_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no conversation found to check for scope creep.",
+            "last_visited_node": "classify_scope_creep",
+        }
+
+    conversation_text = _format_conversation(relevant_messages)
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(ScopeCreepResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_SCOPE_CREEP_SYSTEM_PROMPT},
+                {"role": "user", "content": conversation_text},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: scope creep classification failed: {exc}",
+            "last_visited_node": "classify_scope_creep",
+        }
+
+    note = f"[classify_scope_creep] Status: {result.status}."
+
+    return {
+        "scope_creep_status": result.status,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_scope_creep",
+    }
+
+
+def route_after_scope_creep(state: GraphState) -> str:
+    if state.get("scope_creep_status") == "drifting":
+        return "pivot_to_deeper_process"
+    return "success_analysis_conversation"
+
+
+def pivot_to_deeper_process(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    note = "[pivot_to_deeper_process] Detected scope drift into identity/career-direction territory - pivoted."
+
+    return {
+        "messages": [AIMessage(content=PIVOT_TO_DEEPER_PROCESS_TEXT)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "pivot_to_deeper_process",
+    }
+
+
+def success_analysis_conversation(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    all_messages = state.get("messages") or []
+    start_index = state.get("success_analysis_start_index")
+    relevant_messages = all_messages[start_index:] if start_index is not None else all_messages
+    conversation_text = _format_conversation(relevant_messages)
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": SUCCESS_ANALYSIS_CONVERSATION_SYSTEM_PROMPT},
+            {"role": "user", "content": conversation_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[success_analysis_conversation] Continued the success-analysis conversation."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "success_analysis_conversation",
+    }
 
 
 def _extract_hit_value(hit, *keys):
@@ -1316,6 +1530,15 @@ def route_from_start(state: GraphState) -> str:
         # (if block_chosen_unprompted is True, focus_on_block skipped silently and asked
         # nothing - falls through below, same as any other "nothing left to do yet" turn)
 
+    if last == "present_success_analysis_intro":
+        return "classify_success_consent"  # asked for consent to try the process - classify the reply
+
+    if last in ("invite_success_story", "success_analysis_conversation"):
+        return "classify_scope_creep"  # a new success-analysis message arrived - check scope every round
+
+    # explain_success_value / pivot_to_deeper_process: dead ends for now (future work) -
+    # deliberately no branch here, falls through to the generic fallback below.
+
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
     return "classify_opening"  # first turn - no opening_status yet
@@ -1345,6 +1568,13 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_focus_choice", classify_focus_choice)
     graph_builder.add_node("classify_readiness", classify_readiness)
     graph_builder.add_node("summarize_and_pivot", summarize_and_pivot)
+    graph_builder.add_node("present_success_analysis_intro", present_success_analysis_intro)
+    graph_builder.add_node("classify_success_consent", classify_success_consent)
+    graph_builder.add_node("explain_success_value", explain_success_value)
+    graph_builder.add_node("invite_success_story", invite_success_story)
+    graph_builder.add_node("classify_scope_creep", classify_scope_creep)
+    graph_builder.add_node("pivot_to_deeper_process", pivot_to_deeper_process)
+    graph_builder.add_node("success_analysis_conversation", success_analysis_conversation)
 
     graph_builder.add_conditional_edges(
         START,
@@ -1359,6 +1589,8 @@ def build_graph_builder() -> StateGraph:
             "deepen_round": "deepen_round",
             "focus_on_block": "focus_on_block",
             "classify_focus_choice": "classify_focus_choice",
+            "classify_success_consent": "classify_success_consent",
+            "classify_scope_creep": "classify_scope_creep",
         },
     )
     graph_builder.add_conditional_edges(
@@ -1394,10 +1626,33 @@ def build_graph_builder() -> StateGraph:
         {
             "ask_direction": "ask_direction",
             "retrieve_expressions_content": "retrieve_expressions_content",
+            "present_success_analysis_intro": "present_success_analysis_intro",
             "end": END,
         },
     )
     graph_builder.add_edge("ask_direction", END)
+    graph_builder.add_edge("present_success_analysis_intro", END)
+    graph_builder.add_conditional_edges(
+        "classify_success_consent",
+        route_after_success_consent,
+        {
+            "invite_success_story": "invite_success_story",
+            "explain_success_value": "explain_success_value",
+            "classify_scope_creep": "classify_scope_creep",
+        },
+    )
+    graph_builder.add_edge("explain_success_value", END)
+    graph_builder.add_edge("invite_success_story", END)
+    graph_builder.add_conditional_edges(
+        "classify_scope_creep",
+        route_after_scope_creep,
+        {
+            "pivot_to_deeper_process": "pivot_to_deeper_process",
+            "success_analysis_conversation": "success_analysis_conversation",
+        },
+    )
+    graph_builder.add_edge("pivot_to_deeper_process", END)
+    graph_builder.add_edge("success_analysis_conversation", END)
     graph_builder.add_edge("classify_direction_choice", END)
     graph_builder.add_edge("retrieve_expressions_content", "build_expressions_table")
     graph_builder.add_edge("build_expressions_table", "build_blocks")
