@@ -214,6 +214,7 @@ class GraphState(MessagesState):
     success_analysis_start_index: int | None
     success_consent_answer: Literal["yes", "no", "other"] | None
     scope_creep_status: Literal["in_scope", "drifting"] | None
+    pivot_consent_answer: Literal["yes", "no", "other"] | None
     last_visited_node: str | None
 
 
@@ -623,6 +624,48 @@ def pivot_to_deeper_process(state: GraphState) -> dict:
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "pivot_to_deeper_process",
     }
+
+
+def classify_pivot_consent(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify pivot consent.",
+            "last_visited_node": "classify_pivot_consent",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: pivot consent classification failed: {exc}",
+            "last_visited_node": "classify_pivot_consent",
+        }
+
+    note = f"[classify_pivot_consent] Client's reply classified as: {answer}."
+
+    update = {
+        "pivot_consent_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_pivot_consent",
+    }
+    if answer == "yes":
+        # We already know this is emotional content - that's why the pivot fired in
+        # the first place. Set content_state explicitly so downstream routing that
+        # keys off it (e.g. classify_present_choice's branch) keeps working correctly.
+        update["content_state"] = "emotional_clear"
+    return update
+
+
+def route_after_pivot_consent(state: GraphState) -> str:
+    if state.get("pivot_consent_answer") == "yes":
+        return "retrieve_expressions_content"
+    return "success_analysis_conversation"  # "no" or "other" - stay in the success-analysis tool
 
 
 def success_analysis_conversation(state: GraphState) -> dict:
@@ -1536,8 +1579,11 @@ def route_from_start(state: GraphState) -> str:
     if last in ("invite_success_story", "success_analysis_conversation"):
         return "classify_scope_creep"  # a new success-analysis message arrived - check scope every round
 
-    # explain_success_value / pivot_to_deeper_process: dead ends for now (future work) -
-    # deliberately no branch here, falls through to the generic fallback below.
+    if last == "pivot_to_deeper_process":
+        return "classify_pivot_consent"  # pivot_to_deeper_process asked its question - classify the reply
+
+    # explain_success_value: dead end for now (future work) - deliberately no branch
+    # here, falls through to the generic fallback below.
 
     if state.get("opening_status") is not None:
         return "classify_content_state"  # opening already handled in a previous turn - skip
@@ -1574,6 +1620,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("invite_success_story", invite_success_story)
     graph_builder.add_node("classify_scope_creep", classify_scope_creep)
     graph_builder.add_node("pivot_to_deeper_process", pivot_to_deeper_process)
+    graph_builder.add_node("classify_pivot_consent", classify_pivot_consent)
     graph_builder.add_node("success_analysis_conversation", success_analysis_conversation)
 
     graph_builder.add_conditional_edges(
@@ -1591,6 +1638,7 @@ def build_graph_builder() -> StateGraph:
             "classify_focus_choice": "classify_focus_choice",
             "classify_success_consent": "classify_success_consent",
             "classify_scope_creep": "classify_scope_creep",
+            "classify_pivot_consent": "classify_pivot_consent",
         },
     )
     graph_builder.add_conditional_edges(
@@ -1653,6 +1701,14 @@ def build_graph_builder() -> StateGraph:
     )
     graph_builder.add_edge("pivot_to_deeper_process", END)
     graph_builder.add_edge("success_analysis_conversation", END)
+    graph_builder.add_conditional_edges(
+        "classify_pivot_consent",
+        route_after_pivot_consent,
+        {
+            "retrieve_expressions_content": "retrieve_expressions_content",
+            "success_analysis_conversation": "success_analysis_conversation",
+        },
+    )
     graph_builder.add_edge("classify_direction_choice", END)
     graph_builder.add_edge("retrieve_expressions_content", "build_expressions_table")
     graph_builder.add_edge("build_expressions_table", "build_blocks")
