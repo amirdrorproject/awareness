@@ -32,6 +32,8 @@ ASK_DIRECTION_DUAL_PROMPT = """You are responding briefly in Hebrew to a message
 
 CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
 
+CLASSIFY_YES_NO_OTHER_SYSTEM_PROMPT = """Classify whether the message is an affirmative reply ('yes'), a negative/declining reply ('no'), or something else that doesn't clearly fit either - a real answer with content, a question, unclear, etc. ('other')."""
+
 BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
 
 - row_number: sequential row number, starting from 1
@@ -97,6 +99,11 @@ class ContentStateClassification(BaseModel):
 class DirectionChoiceClassification(BaseModel):
     reasoning: str = Field(description="Reasoning for the chosen direction")
     choice: Literal["pause", "continue"]
+
+
+class YesNoOtherResult(BaseModel):
+    reasoning: str
+    answer: Literal["yes", "no", "other"]
 
 
 class TableRow(BaseModel):
@@ -178,6 +185,7 @@ class GraphState(MessagesState):
     deepen_round_new_rows: list[dict]
     deepen_round_block_updates: list[dict]
     readiness: str
+    respond_check_answer: Literal["yes", "no", "other"] | None
     last_visited_node: str | None
 
 
@@ -260,6 +268,60 @@ def respond_with_check(state: GraphState) -> dict:
         "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
         "last_visited_node": "respond_with_check",
     }
+
+
+def classify_yes_no_other(message_text: str) -> Literal["yes", "no", "other"]:
+    # Reusable helper, not a graph node - any node can call this directly.
+    # No try/except here - error handling stays with whichever node calls it,
+    # matching that node's own audit-log/fallback conventions.
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(YesNoOtherResult)
+    result = structured_llm.invoke(
+        [
+            {"role": "system", "content": CLASSIFY_YES_NO_OTHER_SYSTEM_PROMPT},
+            {"role": "user", "content": message_text},
+        ]
+    )
+    return result.answer
+
+
+def classify_respond_check_choice(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify respond-check choice.",
+            "last_visited_node": "classify_respond_check_choice",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: respond-check choice classification failed: {exc}",
+            "last_visited_node": "classify_respond_check_choice",
+        }
+
+    note = f"[classify_respond_check_choice] Client's reply classified as: {answer}."
+
+    return {
+        "respond_check_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_respond_check_choice",
+    }
+
+
+def route_after_respond_check_choice(state: GraphState) -> str:
+    if state.get("respond_check_answer") == "no":
+        return "end"
+    return "classify_content_state"
 
 
 def route_after_classification(state: GraphState) -> str:
@@ -1197,6 +1259,9 @@ def route_from_start(state: GraphState) -> str:
     if last == "ask_direction":
         return "classify_direction_choice"  # ask_direction just asked a question - classify the reply
 
+    if last == "respond_with_check":
+        return "classify_respond_check_choice"  # respond_with_check asked "רוצה להמשיך?" - classify the reply
+
     if last in ("ask_which_block", "classify_block_target"):
         return "classify_block_target"  # asked (or re-asked) which block - classify the reply
 
@@ -1230,6 +1295,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_content_state", classify_content_state)
     graph_builder.add_node("ask_direction", ask_direction)
     graph_builder.add_node("classify_direction_choice", classify_direction_choice)
+    graph_builder.add_node("classify_respond_check_choice", classify_respond_check_choice)
     graph_builder.add_node("retrieve_expressions_content", retrieve_expressions_content)
     graph_builder.add_node("build_expressions_table", build_expressions_table)
     graph_builder.add_node("build_blocks", build_blocks)
@@ -1252,6 +1318,7 @@ def build_graph_builder() -> StateGraph:
             "classify_opening": "classify_opening",
             "classify_content_state": "classify_content_state",
             "classify_direction_choice": "classify_direction_choice",
+            "classify_respond_check_choice": "classify_respond_check_choice",
             "classify_present_choice": "classify_present_choice",
             "classify_block_target": "classify_block_target",
             "deepen_round": "deepen_round",
@@ -1276,6 +1343,14 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("respond_with_check", END)
+    graph_builder.add_conditional_edges(
+        "classify_respond_check_choice",
+        route_after_respond_check_choice,
+        {
+            "classify_content_state": "classify_content_state",
+            "end": END,
+        },
+    )
     graph_builder.add_conditional_edges(
         "classify_content_state",
         route_after_content_state,
