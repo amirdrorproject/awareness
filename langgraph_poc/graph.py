@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 from typing import Literal
 
 from langchain_anthropic import ChatAnthropic
@@ -8,6 +10,17 @@ from pinecone import Pinecone
 from pydantic import BaseModel, Field
 
 CLASSIFICATION_MODEL = "claude-sonnet-4-6"
+
+# Fixed response text sent to the client verbatim, with no LLM call involved in
+# producing it, lives in messages.json. System prompts that guide LLM-generated
+# text (never sent to the client as-is) live in prompts.json. Both are loaded
+# once here at import time - nodes read from these dicts at call time, not from
+# disk per call.
+with open(Path(__file__).parent / "messages.json", "r", encoding="utf-8") as _messages_file:
+    MESSAGES: dict = json.load(_messages_file)
+
+with open(Path(__file__).parent / "prompts.json", "r", encoding="utf-8") as _prompts_file:
+    PROMPTS: dict = json.load(_prompts_file)
 
 CLASSIFY_OPENING_SYSTEM_PROMPT = """Classify the user's message into one of these opening modes based on length and content:
 1 = minimal message (up to 5 words)
@@ -26,15 +39,9 @@ CLASSIFY_CONTENT_STATE_SYSTEM_PROMPT = """Classify the user's message into one o
 
 4. dual — Dual content: the message contains both clear emotional weight AND a clear practical matter, roughly equally present. Example: 'My manager humiliated me in front of everyone, it broke something in me. I need to know how to write a formal complaint email.'"""
 
-ASK_DIRECTION_EMOTIONAL_VAGUE_PROMPT = """You are responding briefly in Hebrew to a message where something emotional feels present but unclear or possibly hidden. Notice what you noticed, and ask the person if they want to pause on it for a moment or move on to the practical matter. Do not interpret, diagnose, or elaborate - just surface the observation and offer the choice, in one or two short sentences. Example tone: "אני שם לב שיש כאן משהו שאולי כדאי לעצור עליו רגע. רוצה להתעכב על זה, או להמשיך הלאה?" Respond with the message only, in Hebrew, nothing else."""
-
-ASK_DIRECTION_DUAL_PROMPT = """You are responding briefly in Hebrew to a message that contains two clear threads: an emotional one and a practical one. Ask the person which one they want to start with, referencing both threads concretely and specifically based on their actual message - do not use generic placeholders. Example tone: "שומע כאן גם [emotional side] וגם [practical side] - מה יותר חשוב לך להתחיל ממנו?" Respond with the message only, in Hebrew, nothing else."""
-
 CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
 
 CLASSIFY_YES_NO_OTHER_SYSTEM_PROMPT = """Classify whether the message is an affirmative reply ('yes'), a negative/declining reply ('no'), or something else that doesn't clearly fit either - a real answer with content, a question, unclear, etc. ('other')."""
-
-INVITE_TO_SHARE_SYSTEM_PROMPT = """The client just confirmed they want to continue, but hasn't shared any new content yet. Invite them briefly, in Hebrew, to share what's on their mind - something simple and natural like "ספר לי מה קרה", adapted naturally rather than a fixed script. Respond with the invitation only, in Hebrew, nothing else."""
 
 BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
 
@@ -51,14 +58,10 @@ BUILD_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into 
 
 COLOR_BLOCKS_SYSTEM_PROMPT = """For each block, determine if there is a clear emotional color. As a default, you choose the color word - but if the client's own wording (visible in the expressions table below) already contains a fitting emotional word, it's fine to use that instead. If no clear emotional color applies, set color to exactly "לא חד משמעי" - don't force a color when it's not clearly there; when in doubt, prefer not coloring. Example color words for reference (not exhaustive): באסה, מבאס, לא נעים, מתסכל, לחוץ, לא קל, מורכב."""
 
-PRESENT_AND_ASK_SYSTEM_PROMPT = """You are presenting a list of topic blocks to the client in Hebrew, based on what emerged from their message. Present each block as its own item, phrased naturally from its topic. For any block whose color is not "לא חד משמעי", weave that color word naturally into the presentation of that block - for blocks marked "לא חד משמעי", just present the topic plainly, with no color mentioned. After presenting all the blocks, ask this exact question, verbatim: "רוצה קודם שנעמיק באחד מהם, או שכבר ברור לך הכיוון של מה שחשוב לך לעבוד עליו?" Respond with the presentation and the question only, in Hebrew, nothing else."""
-
 CLASSIFY_PRESENT_CHOICE_SYSTEM_PROMPT = """The client was just presented with a list of topic blocks and asked whether they want to deepen on one of them or already know the direction of what's important to work on. Classify their reply:
 - intent = 'practical' if they want to move to practical work / already know what they want to work on.
 - intent = 'deepen' if they want to deepen/explore one of the blocks first.
 If deepening and the client specified which block (by topic or otherwise identifiable reference), set current_block_id to that block's block_id, matching against the blocks provided below. If deepening without specifying which block, leave current_block_id as null."""
-
-ASK_WHICH_BLOCK_SYSTEM_PROMPT = """The client indicated they want to deepen on one of the presented blocks but did not specify which one. Ask a short question, in Hebrew, asking which block they'd like to expand on - reference the actual block topics provided below in the question, not generic placeholders. Respond with the question only, in Hebrew, nothing else."""
 
 CLASSIFY_BLOCK_TARGET_SYSTEM_PROMPT = """The client was just asked which block they would like to expand on. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they are referring to."""
 
@@ -74,10 +77,6 @@ Then, for each new or affected block:
 
 If nothing new was found this round, return empty lists for new_rows and block_updates."""
 
-DEEPEN_REPLY_SYSTEM_PROMPT = """You are replying briefly in Hebrew after the client added more to a block they are deepening on. Reflect back what they just added, using their own words/phrasing as provided below - not new interpretive language of your own - a short acknowledgment, not a full restatement. Then invite them to add more if there's anything else, or to move on when ready. Respond with the reflection and invitation only, in Hebrew, nothing else."""
-
-FOCUS_ON_BLOCK_SYSTEM_PROMPT = """Ask the client, in Hebrew, which of the presented blocks feels most emotionally significant right now, referencing the actual block topics provided below - not generic placeholders. Follow this pattern, adapted naturally to the actual topics given: "מבין [topic 1] / [topic 2] / [topic 3] — מה הכי משמעותי רגשית עכשיו?" Respond with the question only, in Hebrew, nothing else."""
-
 CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT = """The client was just asked which of the presented blocks feels most emotionally significant right now. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they chose."""
 
 CLASSIFY_READINESS_SYSTEM_PROMPT = """Assess the client's readiness to explore the focused block further, based on their messages throughout the conversation so far:
@@ -85,25 +84,29 @@ CLASSIFY_READINESS_SYSTEM_PROMPT = """Assess the client's readiness to explore t
 - half_ready: openness but also reservations - appropriate to process the event, but maybe not yet ready to explore it as a recurring pattern.
 - not_ready: short responses, reverting to practical, "מה אני יכול לעשות"."""
 
-SUMMARIZE_AND_PIVOT_SYSTEM_PROMPT = """Summarize the blocks and their colors provided below briefly, in Hebrew, and note that the conversation is moving toward practical work from here. Keep it as a natural closing summary - do not promise specific next steps that haven't been built. Respond with the summary only, in Hebrew, nothing else."""
-
-PRESENT_SUCCESS_ANALYSIS_INTRO_TEXT = "יכולת היא כמו שריר — כדי שהיא תהיה זמינה וחזקה צריך לזהות ולהכיר אותה. ניתוח של מצבי הצלחה מאפשר להבין איך היכולות שלך פועלות בפועל, ולדייק אותן בשפה שלך. שיטת העבודה תמחיש את זה יותר מכל הסבר. רוצה שננסה?"
-
-EXPLAIN_SUCCESS_VALUE_SYSTEM_PROMPT = """The client declined the invitation to try the success-moment-analysis process. Briefly explain, in Hebrew, the value of the process - without pushing, pressuring, or trying to persuade them to reconsider. Just explain and stop; do not ask again or offer alternatives. Respond with the explanation only, in Hebrew, nothing else."""
-
-INVITE_SUCCESS_STORY_TEXT = "ספר לי על מקרה שבו הייתה לך תחושה של הצלחה / פיצוח / הבנה / פתרון. זה לא חייב להיות קשור לעבודה או אפילו לתוצאה מעשית. אפשר מכל תחום בחיים."
-
 CLASSIFY_SCOPE_CREEP_SYSTEM_PROMPT = """Review the conversation below, which is part of a success-moment-analysis process meant to help the client identify and name their own capabilities from a specific success story they shared. Classify whether the conversation is:
 - in_scope: still about understanding/naming capabilities from the specific story shared.
 - drifting: moving into identity, life meaning, or deep career-direction territory beyond analyzing this specific success story's capabilities."""
 
-PIVOT_TO_DEEPER_PROCESS_TEXT = "אנחנו נוגעים כאן בשאלה עמוקה יותר של זהות או כיוון מקצועי. זה כבר מתאים יותר לתהליך ייעודי. תרצה שנעבור לעסוק בזה במסגרת אחרת?"
+PRACTICAL_TRACK_PAUSE_PHRASE = "יצאתי לחשוב"
 
-SUCCESS_ANALYSIS_CONVERSATION_SYSTEM_PROMPT = """You are guiding a success-moment-analysis conversation, based on a specific success story the client shared. Listen across multiple layers in parallel as the client talks: actions taken, thinking style, inner experience, conditions that enabled the capability, the transition to action, influencing factors, and what counted as success.
+PRACTICAL_TRACK_PAUSE_STRIP_CHARS = " \t\n\r.,!?;:\"'״׳"
 
-Ask only about what's still unclear - never a fixed sequence of questions, and only one question at a time. When a pattern becomes clear, offer it as a hypothesis for the client to confirm or correct - for example: "אני רוצה לבדוק איתך משהו - יכול להיות שהיכולת שבאה כאן לידי ביטוי היא..." - never state it as a fact.
+CLASSIFY_FROM_PRACTICAL_TRACK_SYSTEM_PROMPT = """Review the conversation below. Classify the client's latest message as one of:
+- pausing: the client indicates they want to pause the conversation and step away to think it over.
+- capability_doubt: the client explicitly asks for help evaluating whether they have a capability or resource required for their goal. Doubt alone, even clearly stated, is NOT sufficient on its own - the client can voice and resolve doubt themselves, which stays continuing. Only classify capability_doubt when the client explicitly asks for help assessing it.
+- continuing: neither of the above - they are continuing the conversation normally, including cases where they voice a doubt but resolve or set it aside themselves without asking for help.
 
-Never give advice, never recommend career directions, never analyze market trends, never compliment or grade. Respond in Hebrew, with the next question or hypothesis only, nothing else."""
+Examples (Hebrew), verbatim from the source document:
+
+דוגמא א (continuing, לא capability_doubt):
+הלקוח - ברור לי שאני לא יכול לחשוב על כל מה שצריך לדעת, אני אלמד תוך כדי, ואני שוקל לעבוד כמה חודשים בחומוסייה כדי ללמוד
+
+דוגמא ב (continuing, לא capability_doubt - גבולי):
+הלקוח - אני יודע שהחלק האסתטי במסעדה חשוב, אפילו שזה חומוסייה פשוטה, צריך חשיבה עיצובית, לא בטוח שיש לי את זה, אבל זה לא כל כך משנה, אני לא צריך לדעת הכל, העיקר לדעת להיעזר
+
+דוגמא ג (capability_doubt):
+הלקוח - בנוסף לחומוס אני רוצה להציע כמה תבשילים, אני חושב על מאכלים עממיים. אבל מעולם לא בישלתי ואני לא רוצה לסמוך על טבח. לפחות לא בהתחלה. איך אני בודק עד כמה יש לי את זה?"""
 
 
 class OpeningClassification(BaseModel):
@@ -195,6 +198,11 @@ class ScopeCreepResult(BaseModel):
     status: Literal["in_scope", "drifting"]
 
 
+class FromPracticalTrackResult(BaseModel):
+    reasoning: str
+    status: Literal["pausing", "capability_doubt", "continuing"]
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -215,6 +223,9 @@ class GraphState(MessagesState):
     success_consent_answer: Literal["yes", "no", "other"] | None
     scope_creep_status: Literal["in_scope", "drifting"] | None
     pivot_consent_answer: Literal["yes", "no", "other"] | None
+    practical_track_consent_answer: Literal["yes", "no", "other"] | None
+    practical_track_pause_status: Literal["pausing", "capability_doubt", "continuing"] | None
+    practical_to_success_consent_answer: Literal["yes", "no", "other"] | None
     last_visited_node: str | None
 
 
@@ -258,10 +269,11 @@ def respond_direct(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
 
     if opening_status == 1:
-        response_text = "למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור. אני מקשיב לך."
+        disclosure = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
+        response_text = f"{disclosure} {MESSAGES['respond_direct']}"
         note = "[respond_direct] Triggered by opening_status=1 (minimal message) - proceeding without asking permission."
     else:
-        response_text = "למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור."
+        response_text = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
         note = f"[respond_direct] Triggered by opening_status={opening_status} (detailed situation/dilemma) - proceeding without asking permission."
 
     return {
@@ -279,18 +291,20 @@ def route_after_respond_direct(state: GraphState) -> str:
 
 def respond_with_check(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
+    check_prompts = MESSAGES["respond_with_check"]
 
     if opening_status == 2:
-        acknowledgment = "אני מבין שיש כאן משהו שתרצה לברר."
+        acknowledgment = check_prompts["situation_ack"]
         note = "[respond_with_check] Triggered by opening_status=2 (short situation description)."
     elif opening_status == 4:
-        acknowledgment = "אני מבין שיש כאן התלבטות."
+        acknowledgment = check_prompts["dilemma_ack"]
         note = "[respond_with_check] Triggered by opening_status=4 (short dilemma)."
     else:
-        acknowledgment = "אני מבין שיש כאן משהו שתרצה לברר."
+        acknowledgment = check_prompts["situation_ack"]
         note = f"WARNING: opening_status missing/invalid ({opening_status!r}) - falling back to respond_with_check as a safe default."
 
-    response_text = f"למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור. {acknowledgment} רוצה להמשיך?"
+    disclosure = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
+    response_text = f"{disclosure} {acknowledgment} {check_prompts['suffix']}"
 
     return {
         "messages": [AIMessage(content=response_text)],
@@ -367,7 +381,7 @@ def invite_to_share(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": INVITE_TO_SHARE_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["invite_to_share"]},
             {"role": "user", "content": last_message},
         ]
     )
@@ -433,10 +447,10 @@ def ask_direction(state: GraphState) -> dict:
     last_message = user_messages[-1].content if user_messages else ""
 
     if content_state == "emotional_vague":
-        system_prompt = ASK_DIRECTION_EMOTIONAL_VAGUE_PROMPT
+        system_prompt = PROMPTS["ask_direction"]["emotional_vague"]
         note = "[ask_direction] Triggered by content_state=emotional_vague."
     else:
-        system_prompt = ASK_DIRECTION_DUAL_PROMPT
+        system_prompt = PROMPTS["ask_direction"]["dual"]
         note = "[ask_direction] Triggered by content_state=dual."
 
     llm = ChatAnthropic(
@@ -464,7 +478,7 @@ def route_after_content_state(state: GraphState) -> str:
     if state.get("content_state") == "emotional_clear":
         return "retrieve_expressions_content"
     if state.get("content_state") == "practical_clear":
-        return "present_success_analysis_intro"
+        return "present_practical_track_intro"
     return "end"
 
 
@@ -473,7 +487,7 @@ def present_success_analysis_intro(state: GraphState) -> dict:
     note = "[present_success_analysis_intro] Presented the success-analysis intro and asked for consent."
 
     return {
-        "messages": [AIMessage(content=PRESENT_SUCCESS_ANALYSIS_INTRO_TEXT)],
+        "messages": [AIMessage(content=MESSAGES["present_success_analysis_intro"])],
         "success_analysis_start_index": len(state.get("messages") or []),
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "present_success_analysis_intro",
@@ -530,7 +544,7 @@ def explain_success_value(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": EXPLAIN_SUCCESS_VALUE_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["explain_success_value"]},
             {"role": "user", "content": last_message},
         ]
     )
@@ -550,7 +564,7 @@ def invite_success_story(state: GraphState) -> dict:
     note = "[invite_success_story] Invited the client to share a success story."
 
     return {
-        "messages": [AIMessage(content=INVITE_SUCCESS_STORY_TEXT)],
+        "messages": [AIMessage(content=MESSAGES["invite_success_story"])],
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "invite_success_story",
     }
@@ -620,7 +634,7 @@ def pivot_to_deeper_process(state: GraphState) -> dict:
     note = "[pivot_to_deeper_process] Detected scope drift into identity/career-direction territory - pivoted."
 
     return {
-        "messages": [AIMessage(content=PIVOT_TO_DEEPER_PROCESS_TEXT)],
+        "messages": [AIMessage(content=MESSAGES["pivot_to_deeper_process"])],
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "pivot_to_deeper_process",
     }
@@ -681,7 +695,7 @@ def success_analysis_conversation(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": SUCCESS_ANALYSIS_CONVERSATION_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["success_analysis_conversation"]},
             {"role": "user", "content": conversation_text},
         ]
     )
@@ -975,7 +989,7 @@ def present_and_ask(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": PRESENT_AND_ASK_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["present_and_ask"]},
             {"role": "user", "content": blocks_text},
         ]
     )
@@ -1064,7 +1078,7 @@ def ask_which_block(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": ASK_WHICH_BLOCK_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["ask_which_block"]},
             {"role": "user", "content": blocks_text},
         ]
     )
@@ -1129,7 +1143,7 @@ def classify_block_target(state: GraphState) -> dict:
         )
         clarify_response = clarify_llm.invoke(
             [
-                {"role": "system", "content": ASK_WHICH_BLOCK_SYSTEM_PROMPT},
+                {"role": "system", "content": PROMPTS["ask_which_block"]},
                 {"role": "user", "content": blocks_text},
             ]
         )
@@ -1268,7 +1282,7 @@ def deepen_reply(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": DEEPEN_REPLY_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["deepen_reply"]},
             {
                 "role": "user",
                 "content": f"New expressions this round:\n{additions_text}\n\nAffected blocks:\n{blocks_text}",
@@ -1316,7 +1330,7 @@ def focus_on_block(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": FOCUS_ON_BLOCK_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["focus_on_block"]},
             {"role": "user", "content": blocks_text},
         ]
     )
@@ -1381,7 +1395,7 @@ def classify_focus_choice(state: GraphState) -> dict:
         )
         clarify_response = clarify_llm.invoke(
             [
-                {"role": "system", "content": FOCUS_ON_BLOCK_SYSTEM_PROMPT},
+                {"role": "system", "content": PROMPTS["focus_on_block"]},
                 {"role": "user", "content": blocks_text},
             ]
         )
@@ -1487,7 +1501,7 @@ def summarize_and_pivot(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": SUMMARIZE_AND_PIVOT_SYSTEM_PROMPT},
+            {"role": "system", "content": PROMPTS["summarize_and_pivot"]},
             {"role": "user", "content": blocks_text},
         ]
     )
@@ -1500,6 +1514,177 @@ def summarize_and_pivot(state: GraphState) -> dict:
         "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "summarize_and_pivot",
     }
+
+
+def present_practical_track_intro(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    note = "[present_practical_track_intro] Presented the practical-track intro and asked to begin."
+
+    return {
+        "messages": [AIMessage(content=MESSAGES["present_practical_track_intro"])],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "present_practical_track_intro",
+    }
+
+
+def classify_practical_track_consent(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify practical track consent.",
+            "last_visited_node": "classify_practical_track_consent",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: practical track consent classification failed: {exc}",
+            "last_visited_node": "classify_practical_track_consent",
+        }
+
+    note = f"[classify_practical_track_consent] Client's reply classified as: {answer}."
+
+    return {
+        "practical_track_consent_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_practical_track_consent",
+    }
+
+
+def route_after_practical_track_consent(state: GraphState) -> str:
+    if state.get("practical_track_consent_answer") == "no":
+        return "end"
+    return "practical_track_conversation"  # "yes" or "other" - begin the open-ended dialogue
+
+
+def practical_track_conversation(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    all_messages = state.get("messages") or []
+    conversation_text = _format_conversation(all_messages)
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": PROMPTS["practical_track_conversation"]},
+            {"role": "user", "content": conversation_text},
+        ]
+    )
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    note = "[practical_track_conversation] Continued the practical-track conversation."
+
+    return {
+        "messages": [AIMessage(content=response_text)],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "practical_track_conversation",
+    }
+
+
+def classify_from_practical_track(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    all_messages = state.get("messages") or []
+
+    if not all_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no conversation found to classify.",
+            "last_visited_node": "classify_from_practical_track",
+        }
+
+    conversation_text = _format_conversation(all_messages)
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(FromPracticalTrackResult)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": CLASSIFY_FROM_PRACTICAL_TRACK_SYSTEM_PROMPT},
+                {"role": "user", "content": conversation_text},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: from-practical-track classification failed: {exc}",
+            "last_visited_node": "classify_from_practical_track",
+        }
+
+    note = f"[classify_from_practical_track] Status: {result.status}."
+
+    return {
+        "practical_track_pause_status": result.status,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_from_practical_track",
+    }
+
+
+def route_after_from_practical_track(state: GraphState) -> str:
+    status = state.get("practical_track_pause_status")
+    if status == "pausing":
+        return "end"
+    if status == "capability_doubt":
+        return "pivot_practical_to_success"
+    return "practical_track_conversation"  # "continuing"
+
+
+def pivot_practical_to_success(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    note = "[pivot_practical_to_success] Detected capability doubt - offered to pivot to success-moment analysis."
+
+    return {
+        "messages": [AIMessage(content=MESSAGES["pivot_practical_to_success"])],
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "pivot_practical_to_success",
+    }
+
+
+def classify_practical_to_success_consent(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify practical-to-success consent.",
+            "last_visited_node": "classify_practical_to_success_consent",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: practical-to-success consent classification failed: {exc}",
+            "last_visited_node": "classify_practical_to_success_consent",
+        }
+
+    note = f"[classify_practical_to_success_consent] Client's reply classified as: {answer}."
+
+    return {
+        "practical_to_success_consent_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_practical_to_success_consent",
+    }
+
+
+def route_after_practical_to_success_consent(state: GraphState) -> str:
+    if state.get("practical_to_success_consent_answer") == "yes":
+        return "present_success_analysis_intro"
+    return "practical_track_conversation"  # "no" or "other" - stay in the practical track
 
 
 def classify_direction_choice(state: GraphState) -> dict:
@@ -1582,6 +1767,20 @@ def route_from_start(state: GraphState) -> str:
     if last == "pivot_to_deeper_process":
         return "classify_pivot_consent"  # pivot_to_deeper_process asked its question - classify the reply
 
+    if last == "present_practical_track_intro":
+        return "classify_practical_track_consent"  # asked to begin the practical track - classify the reply
+
+    if last == "practical_track_conversation":
+        user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        last_text = user_messages[-1].content if user_messages else ""
+        last_text = last_text if isinstance(last_text, str) else str(last_text)
+        if last_text.strip(PRACTICAL_TRACK_PAUSE_STRIP_CHARS) == PRACTICAL_TRACK_PAUSE_PHRASE:
+            return "end"  # "יצאתי לחשוב" - deterministic pause, no LLM call needed
+        return "classify_from_practical_track"  # check every round while inside this conversation
+
+    if last == "pivot_practical_to_success":
+        return "classify_practical_to_success_consent"  # asked to pivot - classify the reply
+
     # explain_success_value: dead end for now (future work) - deliberately no branch
     # here, falls through to the generic fallback below.
 
@@ -1598,6 +1797,8 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_content_state", classify_content_state)
     graph_builder.add_node("ask_direction", ask_direction)
     graph_builder.add_node("classify_direction_choice", classify_direction_choice)
+    graph_builder.add_node("present_practical_track_intro", present_practical_track_intro)
+    graph_builder.add_node("classify_practical_track_consent", classify_practical_track_consent)
     graph_builder.add_node("classify_respond_check_choice", classify_respond_check_choice)
     graph_builder.add_node("invite_to_share", invite_to_share)
     graph_builder.add_node("retrieve_expressions_content", retrieve_expressions_content)
@@ -1622,6 +1823,10 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("pivot_to_deeper_process", pivot_to_deeper_process)
     graph_builder.add_node("classify_pivot_consent", classify_pivot_consent)
     graph_builder.add_node("success_analysis_conversation", success_analysis_conversation)
+    graph_builder.add_node("practical_track_conversation", practical_track_conversation)
+    graph_builder.add_node("classify_from_practical_track", classify_from_practical_track)
+    graph_builder.add_node("pivot_practical_to_success", pivot_practical_to_success)
+    graph_builder.add_node("classify_practical_to_success_consent", classify_practical_to_success_consent)
 
     graph_builder.add_conditional_edges(
         START,
@@ -1639,6 +1844,10 @@ def build_graph_builder() -> StateGraph:
             "classify_success_consent": "classify_success_consent",
             "classify_scope_creep": "classify_scope_creep",
             "classify_pivot_consent": "classify_pivot_consent",
+            "classify_practical_track_consent": "classify_practical_track_consent",
+            "classify_from_practical_track": "classify_from_practical_track",
+            "classify_practical_to_success_consent": "classify_practical_to_success_consent",
+            "end": END,
         },
     )
     graph_builder.add_conditional_edges(
@@ -1674,7 +1883,7 @@ def build_graph_builder() -> StateGraph:
         {
             "ask_direction": "ask_direction",
             "retrieve_expressions_content": "retrieve_expressions_content",
-            "present_success_analysis_intro": "present_success_analysis_intro",
+            "present_practical_track_intro": "present_practical_track_intro",
             "end": END,
         },
     )
@@ -1710,6 +1919,34 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("classify_direction_choice", END)
+    graph_builder.add_edge("present_practical_track_intro", END)
+    graph_builder.add_conditional_edges(
+        "classify_practical_track_consent",
+        route_after_practical_track_consent,
+        {
+            "practical_track_conversation": "practical_track_conversation",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("practical_track_conversation", END)
+    graph_builder.add_conditional_edges(
+        "classify_from_practical_track",
+        route_after_from_practical_track,
+        {
+            "practical_track_conversation": "practical_track_conversation",
+            "pivot_practical_to_success": "pivot_practical_to_success",
+            "end": END,
+        },
+    )
+    graph_builder.add_edge("pivot_practical_to_success", END)
+    graph_builder.add_conditional_edges(
+        "classify_practical_to_success_consent",
+        route_after_practical_to_success_consent,
+        {
+            "present_success_analysis_intro": "present_success_analysis_intro",
+            "practical_track_conversation": "practical_track_conversation",
+        },
+    )
     graph_builder.add_edge("retrieve_expressions_content", "build_expressions_table")
     graph_builder.add_edge("build_expressions_table", "build_blocks")
     graph_builder.add_edge("build_blocks", "color_blocks")
