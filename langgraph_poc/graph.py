@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 
 CLASSIFICATION_MODEL = "claude-sonnet-4-6"
 
+SUCCESS_ANALYSIS_RAG_TOP_K = 3
+
 # Fixed response text sent to the client verbatim, with no LLM call involved in
 # producing it, lives in messages.json. System prompts that guide LLM-generated
 # text (never sent to the client as-is) live in prompts.json. Both are loaded
@@ -220,6 +222,8 @@ class GraphState(MessagesState):
     readiness: str
     respond_check_answer: Literal["yes", "no", "other"] | None
     success_analysis_start_index: int | None
+    success_analysis_rag_context: list[dict]
+    success_analysis_rag_query: str | None
     success_consent_answer: Literal["yes", "no", "other"] | None
     scope_creep_status: Literal["in_scope", "drifting"] | None
     pivot_consent_answer: Literal["yes", "no", "other"] | None
@@ -682,12 +686,119 @@ def route_after_pivot_consent(state: GraphState) -> str:
     return "success_analysis_conversation"  # "no" or "other" - stay in the success-analysis tool
 
 
+def retrieve_success_analysis_context(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    all_messages = state.get("messages") or []
+    start_index = state.get("success_analysis_start_index")
+    relevant_messages = all_messages[start_index:] if start_index is not None else all_messages
+    human_messages = [m for m in relevant_messages if isinstance(m, HumanMessage)]
+    query_text = " ".join(
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in human_messages
+    ).strip()
+
+    if not query_text:
+        return {
+            "success_analysis_rag_context": [],
+            "success_analysis_rag_query": None,
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user messages found to build success analysis RAG query.",
+            "last_visited_node": "retrieve_success_analysis_context",
+        }
+
+    api_key = os.environ.get("PINECONE_API_KEY")
+    index_name = os.environ.get("PINECONE_INDEX_NAME")
+    if not api_key or not index_name:
+        return {
+            "success_analysis_rag_context": [],
+            "success_analysis_rag_query": query_text,
+            "internal_audit_log": existing_log
+            + "\nWARNING: PINECONE_API_KEY/PINECONE_INDEX_NAME not set - skipping success analysis context retrieval.",
+            "last_visited_node": "retrieve_success_analysis_context",
+        }
+
+    try:
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+
+        # Same namespace auto-detection as retrieve_expressions_content.
+        stats = index.describe_index_stats()
+        namespaces = stats.get("namespaces") or {}
+        namespace = ""
+        if not (namespaces.get("") or {}).get("vector_count"):
+            populated = [
+                name for name, info in namespaces.items() if (info or {}).get("vector_count")
+            ]
+            if populated:
+                namespace = populated[0]
+
+        results = index.search(
+            namespace=namespace,
+            query={
+                "inputs": {"text": query_text},
+                "top_k": SUCCESS_ANALYSIS_RAG_TOP_K,
+                "filter": {"module": {"$eq": "success_stories_analysis"}, "retrievable": {"$eq": True}},
+            },
+        )
+        hits = (results.get("result") or {}).get("hits") or []
+
+        rag_context = []
+        for hit in hits:
+            fields = _extract_hit_value(hit, "fields") or {}
+            hit_id = _extract_hit_value(hit, "_id", "id")
+            rag_context.append(
+                {
+                    "id": hit_id,
+                    "chunk_id": hit_id,
+                    "score": _extract_hit_value(hit, "_score", "score"),
+                    "text": fields.get("text"),
+                    "chunk_title": fields.get("chunk_title"),
+                }
+            )
+    except Exception as exc:
+        return {
+            "success_analysis_rag_context": [],
+            "success_analysis_rag_query": query_text,
+            "internal_audit_log": existing_log
+            + f"\nWARNING: success analysis context retrieval failed: {exc}",
+            "last_visited_node": "retrieve_success_analysis_context",
+        }
+
+    note = f"[retrieve_success_analysis_context] Retrieved {len(rag_context)} success-stories-analysis chunks."
+
+    return {
+        "success_analysis_rag_context": rag_context,
+        "success_analysis_rag_query": query_text,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "retrieve_success_analysis_context",
+    }
+
+
 def success_analysis_conversation(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     all_messages = state.get("messages") or []
     start_index = state.get("success_analysis_start_index")
     relevant_messages = all_messages[start_index:] if start_index is not None else all_messages
     conversation_text = _format_conversation(relevant_messages)
+
+    rag_context = state.get("success_analysis_rag_context") or []
+    user_content = conversation_text
+    if rag_context:
+        retrieved_text = "\n\n".join(chunk.get("text") or "" for chunk in rag_context)
+        user_content = (
+            "The following is internal background knowledge retrieved to support your listening "
+            "and questioning - it is not information about this specific client. It may surface "
+            "relevant possibilities, layers the client hasn't put into words, useful lines of "
+            "inquiry, ways to sharpen a general capability into a concrete one, or possible "
+            "mechanisms behind a success. It does not diagnose the client and does not establish "
+            "that the client has any capability, pattern, or mechanism - the appearance of a "
+            "concept here does not make it a fact about the client. Never show this retrieved "
+            "material to the client or reference it as a source. Any hypothesis you offer must "
+            "also be grounded in something the client actually said, and must be presented as a "
+            "hypothesis to check, not as a determined fact.\n\n"
+            f"[INTERNAL RETRIEVED KNOWLEDGE]\n{retrieved_text}\n[/INTERNAL RETRIEVED KNOWLEDGE]\n\n"
+            f"{conversation_text}"
+        )
 
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
@@ -696,7 +807,7 @@ def success_analysis_conversation(state: GraphState) -> dict:
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["success_analysis_conversation"]},
-            {"role": "user", "content": conversation_text},
+            {"role": "user", "content": user_content},
         ]
     )
     response_text = response.content if isinstance(response.content, str) else str(response.content)
@@ -1822,6 +1933,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("classify_scope_creep", classify_scope_creep)
     graph_builder.add_node("pivot_to_deeper_process", pivot_to_deeper_process)
     graph_builder.add_node("classify_pivot_consent", classify_pivot_consent)
+    graph_builder.add_node("retrieve_success_analysis_context", retrieve_success_analysis_context)
     graph_builder.add_node("success_analysis_conversation", success_analysis_conversation)
     graph_builder.add_node("practical_track_conversation", practical_track_conversation)
     graph_builder.add_node("classify_from_practical_track", classify_from_practical_track)
@@ -1905,17 +2017,18 @@ def build_graph_builder() -> StateGraph:
         route_after_scope_creep,
         {
             "pivot_to_deeper_process": "pivot_to_deeper_process",
-            "success_analysis_conversation": "success_analysis_conversation",
+            "success_analysis_conversation": "retrieve_success_analysis_context",
         },
     )
     graph_builder.add_edge("pivot_to_deeper_process", END)
+    graph_builder.add_edge("retrieve_success_analysis_context", "success_analysis_conversation")
     graph_builder.add_edge("success_analysis_conversation", END)
     graph_builder.add_conditional_edges(
         "classify_pivot_consent",
         route_after_pivot_consent,
         {
             "retrieve_expressions_content": "retrieve_expressions_content",
-            "success_analysis_conversation": "success_analysis_conversation",
+            "success_analysis_conversation": "retrieve_success_analysis_context",
         },
     )
     graph_builder.add_edge("classify_direction_choice", END)
