@@ -105,8 +105,24 @@ export default config({
           label: 'explain_success_value',
           multiline: true,
         }),
-        reflection_principles: fields.text({
-          label: 'reflection_principles',
+        reflection_stage_1: fields.text({
+          label: 'reflection_stage_1',
+          multiline: true,
+        }),
+        reflection_stage_2: fields.text({
+          label: 'reflection_stage_2',
+          multiline: true,
+        }),
+        reflection_stage_3: fields.text({
+          label: 'reflection_stage_3',
+          multiline: true,
+        }),
+        reflection_stage_4: fields.text({
+          label: 'reflection_stage_4',
+          multiline: true,
+        }),
+        reflection_context_instruction: fields.text({
+          label: 'reflection_context_instruction',
           multiline: true,
         }),
         template_fill_instruction: fields.text({

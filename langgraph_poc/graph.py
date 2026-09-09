@@ -205,6 +205,13 @@ class FromPracticalTrackResult(BaseModel):
     status: Literal["pausing", "capability_doubt", "continuing"]
 
 
+class ReflectionContext(BaseModel):
+    reflection_stage_1: str = Field(description=PROMPTS["reflection_stage_1"])
+    reflection_stage_2: str = Field(description=PROMPTS["reflection_stage_2"])
+    reflection_stage_3: str = Field(description=PROMPTS["reflection_stage_3"])
+    reflection_stage_4: str = Field(description=PROMPTS["reflection_stage_4"])
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -306,6 +313,29 @@ def _build_template_fill_system_prompt(template: str, content_principles: str) -
     return f"{PROMPTS['template_fill_instruction']}\n\n{content_principles}\n\nTemplate:\n{example}"
 
 
+def reflect_on_situation(last_message: str) -> ReflectionContext:
+    # Reusable helper, not a graph node - respond_with_check calls this
+    # directly. No try/except here - respond_with_check is a free-text node
+    # (like ask_direction/invite_to_share/present_and_ask), not a
+    # classification node, and deliberately has no try/except of its own
+    # either; an error here propagates up uncaught, consistent with that.
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(ReflectionContext)
+    return structured_llm.invoke(
+        [
+            {"role": "system", "content": PROMPTS["reflection_context_instruction"]},
+            {"role": "user", "content": last_message},
+        ]
+    )
+
+
+def _build_reflection_final_system_prompt(template: str, context: ReflectionContext) -> str:
+    return _build_template_fill_system_prompt(template, context.model_dump_json())
+
+
 def respond_with_check(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
     check_prompts = MESSAGES["respond_with_check"]
@@ -322,13 +352,16 @@ def respond_with_check(state: GraphState) -> dict:
         template = check_prompts["template_situation"]
         note = f"WARNING: opening_status missing/invalid ({opening_status!r}) - falling back to respond_with_check as a safe default."
 
+    context = reflect_on_situation(last_message)
+    note += f" Reflection context: {context.model_dump_json()}"
+
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": _build_template_fill_system_prompt(template, PROMPTS["reflection_principles"])},
+            {"role": "system", "content": _build_reflection_final_system_prompt(template, context)},
             {"role": "user", "content": last_message},
         ]
     )
