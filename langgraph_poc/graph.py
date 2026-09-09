@@ -293,15 +293,17 @@ def route_after_respond_direct(state: GraphState) -> str:
     return "continue"
 
 
-def _build_reflection_system_prompt(template: str) -> str:
-    # Shared by any node that needs the model to write a complete reply from a
-    # fixed template with one placeholder - the placeholder is filled in with
-    # an example marker here just to show the model the target shape; the
-    # model itself writes out the full templated sentence with its own
-    # reflection substituted in, rather than Python assembling it via string
-    # concatenation.
+def _build_template_fill_system_prompt(template: str, content_principles: str) -> str:
+    # Generic, reusable for any node that needs the model to fill a single
+    # placeholder inside a fixed template and write out the complete reply
+    # itself, rather than Python assembling it via string concatenation.
+    # template_fill_instruction (format/mechanics, not content-specific) is
+    # combined with content_principles (what the generated content should
+    # actually say - varies per caller) and an example rendering of the
+    # template, so the model both understands the technique and sees the
+    # placeholder's exact position.
     example = template.format(reflection="[שיקוף שלך כאן]")
-    return f"{PROMPTS['reflect_situation']}\n\nTemplate:\n{example}"
+    return f"{PROMPTS['template_fill_instruction']}\n\n{content_principles}\n\nTemplate:\n{example}"
 
 
 def respond_with_check(state: GraphState) -> dict:
@@ -326,7 +328,7 @@ def respond_with_check(state: GraphState) -> dict:
     )
     response = llm.invoke(
         [
-            {"role": "system", "content": _build_reflection_system_prompt(template)},
+            {"role": "system", "content": _build_template_fill_system_prompt(template, PROMPTS["reflection_principles"])},
             {"role": "user", "content": last_message},
         ]
     )
