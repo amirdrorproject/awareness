@@ -274,7 +274,7 @@ def respond_direct(state: GraphState) -> dict:
 
     if opening_status == 1:
         disclosure = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
-        response_text = f"{disclosure} {MESSAGES['respond_direct']}"
+        response_text = f"{disclosure} {MESSAGES['respond_direct_opening_status_1']}"
         note = "[respond_direct] Triggered by opening_status=1 (minimal message) - proceeding without asking permission."
     else:
         response_text = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
