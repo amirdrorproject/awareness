@@ -18,8 +18,8 @@ export default config({
             multiline: true,
           }),
         }),
-        respond_direct: fields.text({
-          label: 'respond_direct',
+        respond_direct_opening_status_1: fields.text({
+          label: 'respond_direct_opening_status_1',
           multiline: true,
         }),
         respond_with_check: fields.object({
