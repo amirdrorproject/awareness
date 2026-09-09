@@ -293,22 +293,47 @@ def route_after_respond_direct(state: GraphState) -> str:
     return "continue"
 
 
+def _build_reflection_system_prompt(template: str) -> str:
+    # Shared by any node that needs the model to write a complete reply from a
+    # fixed template with one placeholder - the placeholder is filled in with
+    # an example marker here just to show the model the target shape; the
+    # model itself writes out the full templated sentence with its own
+    # reflection substituted in, rather than Python assembling it via string
+    # concatenation.
+    example = template.format(reflection="[שיקוף שלך כאן]")
+    return f"{PROMPTS['reflect_situation']}\n\nTemplate:\n{example}"
+
+
 def respond_with_check(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
     check_prompts = MESSAGES["respond_with_check"]
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    last_message = user_messages[-1].content if user_messages else ""
 
     if opening_status == 2:
-        acknowledgment = check_prompts["situation_ack"]
+        template = check_prompts["template_situation"]
         note = "[respond_with_check] Triggered by opening_status=2 (short situation description)."
     elif opening_status == 4:
-        acknowledgment = check_prompts["dilemma_ack"]
+        template = check_prompts["template_dilemma"]
         note = "[respond_with_check] Triggered by opening_status=4 (short dilemma)."
     else:
-        acknowledgment = check_prompts["situation_ack"]
+        template = check_prompts["template_situation"]
         note = f"WARNING: opening_status missing/invalid ({opening_status!r}) - falling back to respond_with_check as a safe default."
 
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    response = llm.invoke(
+        [
+            {"role": "system", "content": _build_reflection_system_prompt(template)},
+            {"role": "user", "content": last_message},
+        ]
+    )
+    acknowledgment = response.content if isinstance(response.content, str) else str(response.content)
+
     disclosure = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
-    response_text = f"{disclosure} {acknowledgment} {check_prompts['suffix']}"
+    response_text = f"{disclosure} {acknowledgment}"
 
     return {
         "messages": [AIMessage(content=response_text)],

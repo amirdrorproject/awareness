@@ -23,16 +23,12 @@ export default config({
           multiline: true,
         }),
         respond_with_check: fields.object({
-          situation_ack: fields.text({
-            label: 'situation_ack',
+          template_situation: fields.text({
+            label: 'template_situation',
             multiline: true,
           }),
-          dilemma_ack: fields.text({
-            label: 'dilemma_ack',
-            multiline: true,
-          }),
-          suffix: fields.text({
-            label: 'suffix',
+          template_dilemma: fields.text({
+            label: 'template_dilemma',
             multiline: true,
           }),
         }),
@@ -107,6 +103,10 @@ export default config({
         }),
         explain_success_value: fields.text({
           label: 'explain_success_value',
+          multiline: true,
+        }),
+        reflect_situation: fields.text({
+          label: 'reflect_situation',
           multiline: true,
         }),
       },
