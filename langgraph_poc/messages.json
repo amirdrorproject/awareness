@@ -1,8 +1,8 @@
 {
   "_shared": {
-    "AGENT_DISCLOSURE_TEXT": "היי, למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור, אני כבר ממשיך"
+    "AGENT_DISCLOSURE_TEXT": "היי, למען הסדר הטוב, אני העוזר הדיגיטלי של אמיר דרור, אני כבר ממשיך."
   },
-  "respond_direct_opening_status_1": "אני מקשיב לך.",
+  "respond_direct_opening_status_1": "מקשיב לך, רוצה לספר עוד קצת...\n",
   "respond_with_check": {
     "template_situation": "אני מבין ש{reflection} רוצה להמשיך?",
     "template_dilemma": "אני מבין ש{reflection} ואני מבין שיש כאן התלבטות או רצון לברר את ההחלטה. רוצה להמשיך?"
