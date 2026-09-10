@@ -1897,6 +1897,12 @@ def classify_direction_choice(state: GraphState) -> dict:
     }
 
 
+def route_after_direction_choice(state: GraphState) -> str:
+    if state.get("direction_choice") == "pause":
+        return "invite_to_share"
+    return "present_practical_track_intro"  # "continue"
+
+
 def route_from_start(state: GraphState) -> str:
     last = state.get("last_visited_node")
 
@@ -2091,7 +2097,14 @@ def build_graph_builder() -> StateGraph:
             "success_analysis_conversation": "retrieve_success_analysis_context",
         },
     )
-    graph_builder.add_edge("classify_direction_choice", END)
+    graph_builder.add_conditional_edges(
+        "classify_direction_choice",
+        route_after_direction_choice,
+        {
+            "invite_to_share": "invite_to_share",
+            "present_practical_track_intro": "present_practical_track_intro",
+        },
+    )
     graph_builder.add_edge("present_practical_track_intro", END)
     graph_builder.add_conditional_edges(
         "classify_practical_track_consent",
