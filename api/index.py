@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pinecone import Pinecone
 from pydantic import BaseModel
 
-from .chat_langgraph import get_last_assistant_message, run_chat_turn
+from .chat_langgraph import get_last_assistant_message, get_new_assistant_messages, run_chat_turn
 from .system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
@@ -186,8 +186,13 @@ def chat_langgraph(request: LangGraphChatRequest):
 
     try:
         result = run_chat_turn(request.thread_id, request.message)
+        # responses holds every message this turn produced, in order (usually
+        # one, but classify_professional_content can prepend a disclaimer
+        # before the turn's normal reply). response is kept alongside it,
+        # unchanged, for any caller still relying on the single-string shape.
         return {
             "response": get_last_assistant_message(result["messages"]),
+            "responses": get_new_assistant_messages(result["messages"]),
             "internal_audit_log": result.get("internal_audit_log"),
             "_debug": {
                 "thread_id": request.thread_id,

@@ -52,6 +52,10 @@ export default config({
           label: 'pivot_practical_to_success',
           multiline: true,
         }),
+        professional_content_disclaimer: fields.text({
+          label: 'professional_content_disclaimer',
+          multiline: true,
+        }),
       },
     }),
     prompts: singleton({
@@ -127,6 +131,10 @@ export default config({
         }),
         template_fill_instruction: fields.text({
           label: 'template_fill_instruction',
+          multiline: true,
+        }),
+        is_considered_professional: fields.text({
+          label: 'is_considered_professional',
           multiline: true,
         }),
       },

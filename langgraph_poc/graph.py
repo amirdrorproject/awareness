@@ -212,6 +212,11 @@ class ReflectionContext(BaseModel):
     reflection_stage_4: str = Field(description=PROMPTS["reflection_stage_4"])
 
 
+class ProfessionalContentClassification(BaseModel):
+    reasoning: str = Field(description="Reasoning for the classification")
+    is_professional: bool
+
+
 class GraphState(MessagesState):
     internal_audit_log: str
     opening_status: int
@@ -1903,6 +1908,58 @@ def route_after_direction_choice(state: GraphState) -> str:
     return "present_practical_track_intro"  # "continue"
 
 
+def classify_professional_content(state: GraphState) -> dict:
+    # Cross-cutting check that runs on every turn, before route_from_start's
+    # per-stage dispatch - unlike every other node in this file, it does NOT
+    # stamp last_visited_node in any return path. route_from_start is the only
+    # reader of last_visited_node, and it only runs once per turn (right after
+    # this node). If this node stamped its own name and then turned out to be
+    # the last thing that ran this turn (e.g. the deterministic "יצאתי לחשוב"
+    # pause inside practical_track_conversation, which can end a turn with no
+    # further node executing), the NEXT turn's route_from_start would see
+    # last_visited_node="classify_professional_content" instead of the real
+    # stage the conversation was actually in, breaking its dispatch. Leaving
+    # last_visited_node untouched here means whatever real stage node runs
+    # afterward in the same turn stamps it exactly as it always has.
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify professional content.",
+        }
+
+    last_message = user_messages[-1].content
+
+    llm = ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(ProfessionalContentClassification)
+
+    try:
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": PROMPTS["is_considered_professional"]},
+                {"role": "user", "content": last_message},
+            ]
+        )
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: professional content classification failed: {exc}",
+        }
+
+    note = f"[classify_professional_content] is_professional={result.is_professional}. {result.reasoning}"
+
+    update = {
+        "internal_audit_log": existing_log + "\n" + note,
+    }
+    if result.is_professional:
+        update["messages"] = [AIMessage(content=MESSAGES["professional_content_disclaimer"])]
+    return update
+
+
 def route_from_start(state: GraphState) -> str:
     last = state.get("last_visited_node")
 
@@ -1968,6 +2025,7 @@ def route_from_start(state: GraphState) -> str:
 
 def build_graph_builder() -> StateGraph:
     graph_builder = StateGraph(GraphState)
+    graph_builder.add_node("classify_professional_content", classify_professional_content)
     graph_builder.add_node("classify_opening", classify_opening)
     graph_builder.add_node("respond_direct", respond_direct)
     graph_builder.add_node("respond_with_check", respond_with_check)
@@ -2006,8 +2064,9 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("pivot_practical_to_success", pivot_practical_to_success)
     graph_builder.add_node("classify_practical_to_success_consent", classify_practical_to_success_consent)
 
+    graph_builder.add_edge(START, "classify_professional_content")
     graph_builder.add_conditional_edges(
-        START,
+        "classify_professional_content",
         route_from_start,
         {
             "classify_opening": "classify_opening",

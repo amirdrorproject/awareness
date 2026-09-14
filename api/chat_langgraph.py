@@ -58,3 +58,21 @@ def get_last_assistant_message(messages: list) -> str | None:
     if not messages or not isinstance(messages[-1], AIMessage):
         return None
     return messages[-1].content
+
+
+def get_new_assistant_messages(messages: list) -> list[str]:
+    # Like get_last_assistant_message, but collects every trailing AIMessage
+    # produced this turn, not just the last one - a turn can produce zero
+    # (classify-only), one (the normal case), or two (classify_professional_content's
+    # disclaimer followed by the turn's normal reply). Walking backward from the
+    # end until a HumanMessage is hit captures exactly this turn's output, since
+    # each graph.invoke() call appends its new messages contiguously right after
+    # the one new HumanMessage it was called with.
+    new_messages: list[str] = []
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, AIMessage):
+            new_messages.append(message.content)
+    new_messages.reverse()
+    return new_messages

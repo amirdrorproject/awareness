@@ -34,7 +34,9 @@ export function useChat() {
 
         (async () => {
           const source: MessageSource = useLangGraph ? "langgraph" : "chat";
-          let replyContent: string | null = null;
+          // A turn can produce zero, one, or (e.g. classify_professional_content's
+          // disclaimer followed by the normal reply) more than one message, in order.
+          let replyContents: string[] = [];
           let internalAuditLog: string | undefined;
 
           try {
@@ -62,7 +64,13 @@ export function useChat() {
               // A turn can legitimately produce no reply (e.g. classify_direction_choice,
               // or reaching END directly on emotional_clear/practical_clear) - it only
               // classified and logged internally. Nothing to show, but not an error either.
-              replyContent = data.response ?? null;
+              // responses (plural) carries every message the turn produced, in order;
+              // fall back to the single response field if it's ever absent.
+              replyContents = Array.isArray(data.responses)
+                ? data.responses
+                : data.response
+                  ? [data.response]
+                  : [];
             } else {
               const res = await fetch("/api/chat", {
                 method: "POST",
@@ -73,25 +81,28 @@ export function useChat() {
               });
               if (!res.ok) throw new Error(`Request failed: ${res.status}`);
               const data = await res.json();
-              replyContent = data.content;
+              replyContents = data.content ? [data.content] : [];
             }
           } catch (err) {
-            replyContent =
+            replyContents = [
               err instanceof Error
                 ? `שגיאה בפנייה לשרת: ${err.message}`
-                : "שגיאה בפנייה לשרת.";
+                : "שגיאה בפנייה לשרת.",
+            ];
           }
 
-          if (replyContent !== null) {
-            const reply: Message = {
+          if (replyContents.length > 0) {
+            const replies: Message[] = replyContents.map((content, index) => ({
               id: crypto.randomUUID(),
               role: "assistant",
-              content: replyContent,
+              content,
               createdAt: Date.now(),
               source,
-              internalAuditLog,
-            };
-            setMessages((prev) => [...prev, reply]);
+              // Audit log diff belongs with the turn's last message only, to
+              // avoid showing the same debug info under multiple bubbles.
+              internalAuditLog: index === replyContents.length - 1 ? internalAuditLog : undefined,
+            }));
+            setMessages((prev) => [...prev, ...replies]);
           }
           setIsAssistantTyping(false);
         })();
