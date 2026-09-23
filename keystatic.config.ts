@@ -52,6 +52,10 @@ export default config({
           label: 'pivot_practical_to_success',
           multiline: true,
         }),
+        ask_direction_practical_check: fields.text({
+          label: 'ask_direction_practical_check',
+          multiline: true,
+        }),
         professional_content_disclaimer: fields.text({
           label: 'professional_content_disclaimer',
           multiline: true,
@@ -135,6 +139,10 @@ export default config({
         }),
         is_considered_professional: fields.text({
           label: 'is_considered_professional',
+          multiline: true,
+        }),
+        emotional_vague_words_bank: fields.text({
+          label: 'emotional_vague_words_bank',
           multiline: true,
         }),
       },

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -233,6 +234,7 @@ class GraphState(MessagesState):
     deepen_round_block_updates: list[dict]
     readiness: str
     respond_check_answer: Literal["yes", "no", "other"] | None
+    practical_check_answer: Literal["yes", "no", "other"] | None
     success_analysis_start_index: int | None
     success_analysis_rag_context: list[dict]
     success_analysis_rag_query: str | None
@@ -246,10 +248,12 @@ class GraphState(MessagesState):
 
 
 def classify_opening(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     if not user_messages:
         return {
-            "internal_audit_log": "WARNING: no user message found to classify.",
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify.",
             "last_visited_node": "classify_opening",
         }
 
@@ -270,12 +274,13 @@ def classify_opening(state: GraphState) -> dict:
         )
     except Exception as exc:
         return {
-            "internal_audit_log": f"WARNING: opening classification failed: {exc}",
+            "internal_audit_log": existing_log
+            + f"\nWARNING: opening classification failed: {exc}",
             "last_visited_node": "classify_opening",
         }
 
     return {
-        "internal_audit_log": result.reasoning,
+        "internal_audit_log": existing_log + "\n" + result.reasoning,
         "opening_status": result.mode,
         "last_visited_node": "classify_opening",
     }
@@ -471,6 +476,24 @@ def route_after_classification(state: GraphState) -> str:
     return "respond_with_check"
 
 
+def _find_emotional_vague_word(text: str) -> str | None:
+    # An empty or missing bank means the feature is off, not an error. Entries may
+    # be separated by commas or newlines (or a mix); blank entries are dropped, since
+    # an empty string would otherwise match every message. Matches whole words only -
+    # an entry must not be embedded in a longer word - so prefixed or inflected forms
+    # (e.g. "מפחד" for "פחד") have to be listed in the bank as their own entries.
+    bank = PROMPTS.get("emotional_vague_words_bank", "")
+    haystack = " ".join(text.casefold().split())
+    for entry in bank.replace("\n", ",").split(","):
+        word = entry.strip()
+        if not word:
+            continue
+        pattern = r"(?<!\w)" + re.escape(" ".join(word.casefold().split())) + r"(?!\w)"
+        if re.search(pattern, haystack):
+            return word
+    return None
+
+
 def classify_content_state(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -482,6 +505,20 @@ def classify_content_state(state: GraphState) -> dict:
         }
 
     last_message = user_messages[-1].content
+
+    matched_word = _find_emotional_vague_word(
+        last_message if isinstance(last_message, str) else str(last_message)
+    )
+    if matched_word is not None:
+        note = (
+            f"[classify_content_state] Message contains emotional_vague_words_bank entry "
+            f"{matched_word!r} - classified as emotional_vague without an LLM call."
+        )
+        return {
+            "internal_audit_log": existing_log + "\n" + note,
+            "content_state": "emotional_vague",
+            "last_visited_node": "classify_content_state",
+        }
 
     llm = ChatAnthropic(
         model=CLASSIFICATION_MODEL,
@@ -512,6 +549,17 @@ def classify_content_state(state: GraphState) -> dict:
 
 def ask_direction(state: GraphState) -> dict:
     content_state = state.get("content_state")
+    existing_log = state.get("internal_audit_log", "")
+
+    if content_state == "practical_clear":
+        response_text = MESSAGES["ask_direction_practical_check"]
+        note = "[ask_direction] Triggered by content_state=practical_clear (fixed check, no LLM call)."
+        return {
+            "messages": [AIMessage(content=response_text)],
+            "internal_audit_log": existing_log + "\n" + note,
+            "last_visited_node": "ask_direction_practical_check",
+        }
+
     user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     last_message = user_messages[-1].content if user_messages else ""
 
@@ -536,18 +584,16 @@ def ask_direction(state: GraphState) -> dict:
 
     return {
         "messages": [AIMessage(content=response_text)],
-        "internal_audit_log": state.get("internal_audit_log", "") + "\n" + note,
+        "internal_audit_log": existing_log + "\n" + note,
         "last_visited_node": "ask_direction",
     }
 
 
 def route_after_content_state(state: GraphState) -> str:
-    if state.get("content_state") in ("emotional_vague", "dual"):
+    if state.get("content_state") in ("emotional_vague", "dual", "practical_clear"):
         return "ask_direction"
     if state.get("content_state") == "emotional_clear":
         return "retrieve_expressions_content"
-    if state.get("content_state") == "practical_clear":
-        return "present_practical_track_intro"
     return "end"
 
 
@@ -1960,8 +2006,48 @@ def classify_professional_content(state: GraphState) -> dict:
     return update
 
 
+def classify_practical_check_choice(state: GraphState) -> dict:
+    existing_log = state.get("internal_audit_log", "")
+    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    if not user_messages:
+        return {
+            "internal_audit_log": existing_log
+            + "\nWARNING: no user message found to classify practical check choice.",
+            "last_visited_node": "classify_practical_check_choice",
+        }
+
+    last_message = user_messages[-1].content
+
+    try:
+        answer = classify_yes_no_other(last_message)
+    except Exception as exc:
+        return {
+            "internal_audit_log": existing_log
+            + f"\nWARNING: practical check choice classification failed: {exc}",
+            "last_visited_node": "classify_practical_check_choice",
+        }
+
+    note = f"[classify_practical_check_choice] Client's reply classified as: {answer}."
+
+    return {
+        "practical_check_answer": answer,
+        "internal_audit_log": existing_log + "\n" + note,
+        "last_visited_node": "classify_practical_check_choice",
+    }
+
+
+def route_after_practical_check_choice(state: GraphState) -> str:
+    answer = state.get("practical_check_answer")
+    if answer == "no":
+        return "present_practical_track_intro"  # nothing beyond the practical - confirmed pure practical
+    return "classify_content_state"  # "yes"/"other" - there's more, or unclear - reclassify on the new content
+
+
 def route_from_start(state: GraphState) -> str:
     last = state.get("last_visited_node")
+
+    if last == "ask_direction_practical_check":
+        return "classify_practical_check_choice"  # practical check question was asked - classify the reply
 
     if last == "ask_direction":
         return "classify_direction_choice"  # ask_direction just asked a question - classify the reply
@@ -2035,6 +2121,7 @@ def build_graph_builder() -> StateGraph:
     graph_builder.add_node("present_practical_track_intro", present_practical_track_intro)
     graph_builder.add_node("classify_practical_track_consent", classify_practical_track_consent)
     graph_builder.add_node("classify_respond_check_choice", classify_respond_check_choice)
+    graph_builder.add_node("classify_practical_check_choice", classify_practical_check_choice)
     graph_builder.add_node("invite_to_share", invite_to_share)
     graph_builder.add_node("retrieve_expressions_content", retrieve_expressions_content)
     graph_builder.add_node("build_expressions_table", build_expressions_table)
@@ -2073,6 +2160,7 @@ def build_graph_builder() -> StateGraph:
             "classify_content_state": "classify_content_state",
             "classify_direction_choice": "classify_direction_choice",
             "classify_respond_check_choice": "classify_respond_check_choice",
+            "classify_practical_check_choice": "classify_practical_check_choice",
             "classify_present_choice": "classify_present_choice",
             "classify_block_target": "classify_block_target",
             "deepen_round": "deepen_round",
@@ -2114,6 +2202,14 @@ def build_graph_builder() -> StateGraph:
         },
     )
     graph_builder.add_edge("invite_to_share", END)
+    graph_builder.add_conditional_edges(
+        "classify_practical_check_choice",
+        route_after_practical_check_choice,
+        {
+            "present_practical_track_intro": "present_practical_track_intro",
+            "classify_content_state": "classify_content_state",
+        },
+    )
     graph_builder.add_conditional_edges(
         "classify_content_state",
         route_after_content_state,
