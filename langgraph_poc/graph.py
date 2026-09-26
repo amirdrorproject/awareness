@@ -30,6 +30,48 @@ with open(Path(__file__).parent / "prompts.json", "r", encoding="utf-8") as _pro
 with open(Path(__file__).parent / "const_prompts.json", "r", encoding="utf-8") as _const_prompts_file:
     CONST_PROMPTS: dict = json.load(_const_prompts_file)
 
+
+def _get_llm() -> ChatAnthropic:
+    return ChatAnthropic(
+        model=CLASSIFICATION_MODEL,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    )
+
+
+def _content_text(message) -> str:
+    return message.content if isinstance(message.content, str) else str(message.content)
+
+
+def _human_messages(messages) -> list:
+    return [m for m in messages if isinstance(m, HumanMessage)]
+
+
+def _format_blocks(blocks: list[dict], include_color: bool = False) -> str:
+    if include_color:
+        return "\n".join(
+            f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
+            for block in blocks
+        )
+    return "\n".join(
+        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
+    )
+
+
+def _detect_namespace(index) -> str:
+    # Auto-detect which namespace actually has data (same as /api/pinecone-query):
+    # the default namespace if populated, otherwise the first populated one.
+    stats = index.describe_index_stats()
+    namespaces = stats.get("namespaces") or {}
+    namespace = ""
+    if not (namespaces.get("") or {}).get("vector_count"):
+        populated = [
+            name for name, info in namespaces.items() if (info or {}).get("vector_count")
+        ]
+        if populated:
+            namespace = populated[0]
+    return namespace
+
+
 PRACTICAL_TRACK_PAUSE_PHRASE = "יצאתי לחשוב"
 
 PRACTICAL_TRACK_PAUSE_STRIP_CHARS = " \t\n\r.,!?;:\"'״׳"
@@ -172,7 +214,7 @@ class GraphState(MessagesState):
 
 def classify_opening(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -182,10 +224,7 @@ def classify_opening(state: GraphState) -> dict:
 
     first_message = user_messages[0].content
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(OpeningClassification)
 
     try:
@@ -252,10 +291,7 @@ def reflect_on_situation(last_message: str) -> ReflectionContext:
     # (like ask_direction/invite_to_share/present_and_ask), not a
     # classification node, and deliberately has no try/except of its own
     # either; an error here propagates up uncaught, consistent with that.
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ReflectionContext)
     return structured_llm.invoke(
         [
@@ -272,7 +308,7 @@ def _build_reflection_final_system_prompt(template: str, context: ReflectionCont
 def respond_with_check(state: GraphState) -> dict:
     opening_status = state.get("opening_status")
     check_prompts = MESSAGES["respond_with_check"]
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     last_message = user_messages[-1].content if user_messages else ""
 
     if opening_status == 2:
@@ -288,17 +324,14 @@ def respond_with_check(state: GraphState) -> dict:
     context = reflect_on_situation(last_message)
     note += f" Reflection context: {context.model_dump_json()}"
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": _build_reflection_final_system_prompt(template, context)},
             {"role": "user", "content": last_message},
         ]
     )
-    acknowledgment = response.content if isinstance(response.content, str) else str(response.content)
+    acknowledgment = _content_text(response)
 
     disclosure = MESSAGES["_shared"]["AGENT_DISCLOSURE_TEXT"]
     response_text = f"{disclosure} {acknowledgment}"
@@ -314,10 +347,7 @@ def classify_yes_no_other(message_text: str) -> Literal["yes", "no", "other"]:
     # Reusable helper, not a graph node - any node can call this directly.
     # No try/except here - error handling stays with whichever node calls it,
     # matching that node's own audit-log/fallback conventions.
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(YesNoOtherResult)
     result = structured_llm.invoke(
         [
@@ -330,7 +360,7 @@ def classify_yes_no_other(message_text: str) -> Literal["yes", "no", "other"]:
 
 def classify_respond_check_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -369,20 +399,17 @@ def route_after_respond_check_choice(state: GraphState) -> str:
 
 def invite_to_share(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     last_message = user_messages[-1].content if user_messages else ""
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["invite_to_share"]},
             {"role": "user", "content": last_message},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[invite_to_share] Invited client to share content after confirming they want to continue."
 
@@ -419,7 +446,7 @@ def _find_emotional_vague_word(text: str) -> str | None:
 
 def classify_content_state(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -443,10 +470,7 @@ def classify_content_state(state: GraphState) -> dict:
             "last_visited_node": "classify_content_state",
         }
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ContentStateClassification)
 
     try:
@@ -483,7 +507,7 @@ def ask_direction(state: GraphState) -> dict:
             "last_visited_node": "ask_direction_practical_check",
         }
 
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     last_message = user_messages[-1].content if user_messages else ""
 
     if content_state == "emotional_vague":
@@ -493,17 +517,14 @@ def ask_direction(state: GraphState) -> dict:
         system_prompt = PROMPTS["ask_direction"]["dual"]
         note = "[ask_direction] Triggered by content_state=dual."
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": last_message},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     return {
         "messages": [AIMessage(content=response_text)],
@@ -534,7 +555,7 @@ def present_success_analysis_intro(state: GraphState) -> dict:
 
 def classify_success_consent(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -573,20 +594,17 @@ def route_after_success_consent(state: GraphState) -> str:
 
 def explain_success_value(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     last_message = user_messages[-1].content if user_messages else ""
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["explain_success_value"]},
             {"role": "user", "content": last_message},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[explain_success_value] Explained the value of the process without pushing further."
 
@@ -612,7 +630,7 @@ def _format_conversation(messages) -> str:
     lines = []
     for m in messages:
         role = "Client" if isinstance(m, HumanMessage) else "Assistant"
-        content = m.content if isinstance(m.content, str) else str(m.content)
+        content = _content_text(m)
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
@@ -632,10 +650,7 @@ def classify_scope_creep(state: GraphState) -> dict:
 
     conversation_text = _format_conversation(relevant_messages)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ScopeCreepResult)
 
     try:
@@ -680,7 +695,7 @@ def pivot_to_deeper_process(state: GraphState) -> dict:
 
 def classify_pivot_consent(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -725,9 +740,9 @@ def retrieve_success_analysis_context(state: GraphState) -> dict:
     all_messages = state.get("messages") or []
     start_index = state.get("success_analysis_start_index")
     relevant_messages = all_messages[start_index:] if start_index is not None else all_messages
-    human_messages = [m for m in relevant_messages if isinstance(m, HumanMessage)]
+    human_messages = _human_messages(relevant_messages)
     query_text = " ".join(
-        m.content if isinstance(m.content, str) else str(m.content)
+        _content_text(m)
         for m in human_messages
     ).strip()
 
@@ -756,15 +771,7 @@ def retrieve_success_analysis_context(state: GraphState) -> dict:
         index = pc.Index(index_name)
 
         # Same namespace auto-detection as retrieve_expressions_content.
-        stats = index.describe_index_stats()
-        namespaces = stats.get("namespaces") or {}
-        namespace = ""
-        if not (namespaces.get("") or {}).get("vector_count"):
-            populated = [
-                name for name, info in namespaces.items() if (info or {}).get("vector_count")
-            ]
-            if populated:
-                namespace = populated[0]
+        namespace = _detect_namespace(index)
 
         results = index.search(
             namespace=namespace,
@@ -825,17 +832,14 @@ def success_analysis_conversation(state: GraphState) -> dict:
             f"{conversation_text}"
         )
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["success_analysis_conversation"]},
             {"role": "user", "content": user_content},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[success_analysis_conversation] Continued the success-analysis conversation."
 
@@ -867,9 +871,9 @@ def _extract_hit_value(hit, *keys):
 
 def retrieve_expressions_content(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    human_messages = _human_messages(state["messages"])
     query_text = " ".join(
-        m.content if isinstance(m.content, str) else str(m.content)
+        _content_text(m)
         for m in human_messages
     ).strip()
 
@@ -897,15 +901,7 @@ def retrieve_expressions_content(state: GraphState) -> dict:
         # Not applying a module/doc_type filter for "bank" content yet - we haven't
         # confirmed the actual metadata values in this index, and a wrong filter
         # would silently return zero results rather than erroring.
-        stats = index.describe_index_stats()
-        namespaces = stats.get("namespaces") or {}
-        namespace = ""
-        if not (namespaces.get("") or {}).get("vector_count"):
-            populated = [
-                name for name, info in namespaces.items() if (info or {}).get("vector_count")
-            ]
-            if populated:
-                namespace = populated[0]
+        namespace = _detect_namespace(index)
 
         results = index.search(
             namespace=namespace,
@@ -943,9 +939,9 @@ def retrieve_expressions_content(state: GraphState) -> dict:
 
 def build_expressions_table(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    human_messages = _human_messages(state["messages"])
     conversation_text = "\n".join(
-        m.content if isinstance(m.content, str) else str(m.content)
+        _content_text(m)
         for m in human_messages
     )
 
@@ -955,10 +951,7 @@ def build_expressions_table(state: GraphState) -> dict:
         for chunk in expressions_content
     )
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ExpressionsTableResult)
 
     user_content = (
@@ -1009,10 +1002,7 @@ def build_blocks(state: GraphState) -> dict:
         for row in expressions_table
     )
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(BuildBlocksResult)
 
     try:
@@ -1052,18 +1042,13 @@ def color_blocks(state: GraphState) -> dict:
             "last_visited_node": "color_blocks",
         }
 
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
     expressions_text = "\n".join(
         f"{row.get('row_number')}. block_id={row.get('block_id')}, expression={row.get('expression')!r}"
         for row in expressions_table
     )
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ColorBlocksResult)
 
     user_content = (
@@ -1114,22 +1099,16 @@ def present_and_ask(state: GraphState) -> dict:
             "last_visited_node": "present_and_ask",
         }
 
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
-        for block in blocks
-    )
+    blocks_text = _format_blocks(blocks, include_color=True)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["present_and_ask"]},
             {"role": "user", "content": blocks_text},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = f"[present_and_ask] Presented {len(blocks)} blocks and asked management question."
 
@@ -1142,7 +1121,7 @@ def present_and_ask(state: GraphState) -> dict:
 
 def classify_present_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1152,14 +1131,9 @@ def classify_present_choice(state: GraphState) -> dict:
 
     last_message = user_messages[-1].content
     blocks = state.get("blocks") or []
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(PresentChoiceResult)
 
     try:
@@ -1204,21 +1178,16 @@ def route_after_present_choice(state: GraphState) -> str:
 def ask_which_block(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
     blocks = state.get("blocks") or []
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["ask_which_block"]},
             {"role": "user", "content": blocks_text},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[ask_which_block] Asked client to specify which block to deepen on."
 
@@ -1231,7 +1200,7 @@ def ask_which_block(state: GraphState) -> dict:
 
 def classify_block_target(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1241,14 +1210,9 @@ def classify_block_target(state: GraphState) -> dict:
 
     last_message = user_messages[-1].content
     blocks = state.get("blocks") or []
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(BlockTargetResult)
 
     try:
@@ -1273,21 +1237,14 @@ def classify_block_target(state: GraphState) -> dict:
         # The model didn't return a block_id that actually exists - fall back to
         # asking again, same wording/pattern as ask_which_block, rather than
         # silently accepting a hallucinated target.
-        clarify_llm = ChatAnthropic(
-            model=CLASSIFICATION_MODEL,
-            api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        )
+        clarify_llm = _get_llm()
         clarify_response = clarify_llm.invoke(
             [
                 {"role": "system", "content": PROMPTS["ask_which_block"]},
                 {"role": "user", "content": blocks_text},
             ]
         )
-        clarify_text = (
-            clarify_response.content
-            if isinstance(clarify_response.content, str)
-            else str(clarify_response.content)
-        )
+        clarify_text = _content_text(clarify_response)
         note = (
             f"WARNING: classify_block_target returned block_id={result.current_block_id!r}, "
             "which doesn't match any known block - asking client to clarify."
@@ -1316,7 +1273,7 @@ def route_after_block_target(state: GraphState) -> str:
 
 def deepen_round(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1335,15 +1292,9 @@ def deepen_round(state: GraphState) -> dict:
         f"matched_expression={row.get('matched_expression')!r}, match_level={row.get('match_level')}"
         for row in expressions_table
     )
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
-        for block in blocks
-    )
+    blocks_text = _format_blocks(blocks, include_color=True)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(DeepenRoundResult)
 
     user_content = (
@@ -1412,10 +1363,7 @@ def deepen_reply(state: GraphState) -> dict:
     additions_text = "\n".join(f"- {row.get('expression')!r}" for row in new_rows)
     blocks_text = "\n".join(f"- {block.get('topic')!r}" for block in block_updates)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["deepen_reply"]},
@@ -1425,7 +1373,7 @@ def deepen_reply(state: GraphState) -> dict:
             },
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = f"[deepen_reply] Round {round_count}: reflected back {len(new_rows)} new expressions and invited more or moving on."
 
@@ -1456,21 +1404,16 @@ def focus_on_block(state: GraphState) -> dict:
             "last_visited_node": "focus_on_block",
         }
 
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["focus_on_block"]},
             {"role": "user", "content": blocks_text},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[focus_on_block] Asked client which block feels most emotionally significant now."
 
@@ -1483,7 +1426,7 @@ def focus_on_block(state: GraphState) -> dict:
 
 def classify_focus_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1493,14 +1436,9 @@ def classify_focus_choice(state: GraphState) -> dict:
 
     last_message = user_messages[-1].content
     blocks = state.get("blocks") or []
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}" for block in blocks
-    )
+    blocks_text = _format_blocks(blocks)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(FocusChoiceResult)
 
     try:
@@ -1525,21 +1463,14 @@ def classify_focus_choice(state: GraphState) -> dict:
         # The model didn't return a block_id that actually exists - fall back to
         # asking again, same wording/pattern as focus_on_block, rather than
         # silently accepting a hallucinated target.
-        clarify_llm = ChatAnthropic(
-            model=CLASSIFICATION_MODEL,
-            api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        )
+        clarify_llm = _get_llm()
         clarify_response = clarify_llm.invoke(
             [
                 {"role": "system", "content": PROMPTS["focus_on_block"]},
                 {"role": "user", "content": blocks_text},
             ]
         )
-        clarify_text = (
-            clarify_response.content
-            if isinstance(clarify_response.content, str)
-            else str(clarify_response.content)
-        )
+        clarify_text = _content_text(clarify_response)
         note = (
             f"WARNING: classify_focus_choice returned block_id={result.current_block_id!r}, "
             "which doesn't match any known block - asking client to clarify."
@@ -1568,7 +1499,7 @@ def route_after_focus_choice(state: GraphState) -> str:
 
 def classify_readiness(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    human_messages = _human_messages(state["messages"])
     if not human_messages:
         return {
             "internal_audit_log": existing_log
@@ -1577,14 +1508,11 @@ def classify_readiness(state: GraphState) -> dict:
         }
 
     conversation_text = "\n".join(
-        m.content if isinstance(m.content, str) else str(m.content)
+        _content_text(m)
         for m in human_messages
     )
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ReadinessResult)
 
     try:
@@ -1626,22 +1554,16 @@ def summarize_and_pivot(state: GraphState) -> dict:
             "last_visited_node": "summarize_and_pivot",
         }
 
-    blocks_text = "\n".join(
-        f"{block.get('block_id')}. topic={block.get('topic')!r}, color={block.get('color')!r}"
-        for block in blocks
-    )
+    blocks_text = _format_blocks(blocks, include_color=True)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["summarize_and_pivot"]},
             {"role": "user", "content": blocks_text},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[summarize_and_pivot] Summarized blocks/colors and pivoted toward practical work."
 
@@ -1665,7 +1587,7 @@ def present_practical_track_intro(state: GraphState) -> dict:
 
 def classify_practical_track_consent(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1704,17 +1626,14 @@ def practical_track_conversation(state: GraphState) -> dict:
     all_messages = state.get("messages") or []
     conversation_text = _format_conversation(all_messages)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     response = llm.invoke(
         [
             {"role": "system", "content": PROMPTS["practical_track_conversation"]},
             {"role": "user", "content": conversation_text},
         ]
     )
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    response_text = _content_text(response)
 
     note = "[practical_track_conversation] Continued the practical-track conversation."
 
@@ -1738,10 +1657,7 @@ def classify_from_practical_track(state: GraphState) -> dict:
 
     conversation_text = _format_conversation(all_messages)
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(FromPracticalTrackResult)
 
     try:
@@ -1789,7 +1705,7 @@ def pivot_practical_to_success(state: GraphState) -> dict:
 
 def classify_practical_to_success_consent(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1825,7 +1741,7 @@ def route_after_practical_to_success_consent(state: GraphState) -> str:
 
 def classify_direction_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1835,10 +1751,7 @@ def classify_direction_choice(state: GraphState) -> dict:
 
     last_message = user_messages[-1].content
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(DirectionChoiceClassification)
 
     try:
@@ -1882,7 +1795,7 @@ def classify_professional_content(state: GraphState) -> dict:
     # last_visited_node untouched here means whatever real stage node runs
     # afterward in the same turn stamps it exactly as it always has.
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -1891,10 +1804,7 @@ def classify_professional_content(state: GraphState) -> dict:
 
     last_message = user_messages[-1].content
 
-    llm = ChatAnthropic(
-        model=CLASSIFICATION_MODEL,
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = _get_llm()
     structured_llm = llm.with_structured_output(ProfessionalContentClassification)
 
     try:
@@ -1922,7 +1832,7 @@ def classify_professional_content(state: GraphState) -> dict:
 
 def classify_practical_check_choice(state: GraphState) -> dict:
     existing_log = state.get("internal_audit_log", "")
-    user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    user_messages = _human_messages(state["messages"])
     if not user_messages:
         return {
             "internal_audit_log": existing_log
@@ -2005,7 +1915,7 @@ def route_from_start(state: GraphState) -> str:
         return "classify_practical_track_consent"  # asked to begin the practical track - classify the reply
 
     if last == "practical_track_conversation":
-        user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        user_messages = _human_messages(state["messages"])
         last_text = user_messages[-1].content if user_messages else ""
         last_text = last_text if isinstance(last_text, str) else str(last_text)
         if last_text.strip(PRACTICAL_TRACK_PAUSE_STRIP_CHARS) == PRACTICAL_TRACK_PAUSE_PHRASE:
