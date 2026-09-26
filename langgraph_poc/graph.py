@@ -25,91 +25,14 @@ with open(Path(__file__).parent / "messages.json", "r", encoding="utf-8") as _me
 with open(Path(__file__).parent / "prompts.json", "r", encoding="utf-8") as _prompts_file:
     PROMPTS: dict = json.load(_prompts_file)
 
-CLASSIFY_OPENING_SYSTEM_PROMPT = """Classify the user's message into one of these opening modes based on length and content:
-1 = minimal message (up to 5 words)
-2 = short situation description (up to 2 sentences, no emotional depth)
-3 = detailed situation (3+ sentences, clear context)
-4 = short dilemma (up to 2 sentences)
-5 = detailed dilemma (3+ sentences, includes background/considerations)"""
-
-CLASSIFY_CONTENT_STATE_SYSTEM_PROMPT = """Classify the user's message into one of these content states:
-
-1. emotional_clear — Clear emotional content. Signs: explicit emotional expression (hurt, scared, frustrated, disappointed), physical-metaphorical expression (lump in throat, weight on chest, trapped), three or more threads brought together (complexity), a dilemma with visible emotional tension, a practical question wrapped in emotional weight.
-
-2. emotional_vague — Vague/hidden emotional content. Signs: a practical question with a hint of something behind it, general phrasing that might be hiding something specific, a single emotional word within an otherwise practical description ('that threw me off', 'not like me') where it's unclear how significant it is, possible concealment - the person presents as 'fine' but there's a crack.
-
-3. practical_clear — Clear practical content, no emotional concern. Signs: a focused question, no emotional expressions, the person has already processed what they needed to and is ready for action.
-
-4. dual — Dual content: the message contains both clear emotional weight AND a clear practical matter, roughly equally present. Example: 'My manager humiliated me in front of everyone, it broke something in me. I need to know how to write a formal complaint email.'"""
-
-CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT = """The user was just asked whether they want to pause on an emotional thread that was noticed, or continue toward the practical matter. Classify their reply as 'pause' (they want to stay with/explore the emotional thread) or 'continue' (they want to move to the practical matter)."""
-
-CLASSIFY_YES_NO_OTHER_SYSTEM_PROMPT = """Classify whether the message is an affirmative reply ('yes'), a negative/declining reply ('no'), or something else that doesn't clearly fit either - a real answer with content, a question, unclear, etc. ('other')."""
-
-BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT = """Scan the client's words across the conversation for emotionally meaningful expressions - explicit, implied, or physical/somatic. For each expression found, match it against the retrieved bank content provided below and produce one table row per expression, using these exact field definitions:
-
-- row_number: sequential row number, starting from 1
-- expression: the exact quote from the client's own words
-- expression_type: one of "גלוי" (explicit), "מרומז" (implied), or "פיזי" (physical/somatic)
-- bank_name: the name of the bank (module) the matched expression came from
-- matched_expression: the specific matching expression found in the bank content
-- match_level: one of "זהה" (identical), "דומה" (similar), "קרוב" (close), or "מנוגד" (opposite)
-
-Only use the bank content provided below as the source for bank_name and matched_expression - do not invent matches that aren't grounded in it."""
-
-BUILD_BLOCKS_SYSTEM_PROMPT = """Review the table rows below and group them into blocks (topic groups). Each block should have a short, factual-neutral topic phrase - not emotional or interpretive language. Every row must be assigned to exactly one block_id - no orphaned rows. Decide the number of blocks naturally based on the content; do not force a specific count."""
-
-COLOR_BLOCKS_SYSTEM_PROMPT = """For each block, determine if there is a clear emotional color. As a default, you choose the color word - but if the client's own wording (visible in the expressions table below) already contains a fitting emotional word, it's fine to use that instead. If no clear emotional color applies, set color to exactly "לא חד משמעי" - don't force a color when it's not clearly there; when in doubt, prefer not coloring. Example color words for reference (not exhaustive): באסה, מבאס, לא נעים, מתסכל, לחוץ, לא קל, מורכב."""
-
-CLASSIFY_PRESENT_CHOICE_SYSTEM_PROMPT = """The client was just presented with a list of topic blocks and asked whether they want to deepen on one of them or already know the direction of what's important to work on. Classify their reply:
-- intent = 'practical' if they want to move to practical work / already know what they want to work on.
-- intent = 'deepen' if they want to deepen/explore one of the blocks first.
-If deepening and the client specified which block (by topic or otherwise identifiable reference), set current_block_id to that block's block_id, matching against the blocks provided below. If deepening without specifying which block, leave current_block_id as null."""
-
-CLASSIFY_BLOCK_TARGET_SYSTEM_PROMPT = """The client was just asked which block they would like to expand on. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they are referring to."""
-
-DEEPEN_ROUND_SYSTEM_PROMPT = """The client is deepening on one specific block in an ongoing conversation. Scan the client's new message below for emotionally meaningful expressions - explicit, implied, or physical/somatic (same criteria as before). For each expression:
-- If it is a new expression not already covered by the existing table below, add it as a new row in new_rows.
-- If it is an expansion of an existing row's expression, do NOT add a new row for it - UNLESS it reveals a new layer or nuance not covered by the existing row, in which case add a new row for that new layer only.
-- Match each new expression against the bank content already reflected in the existing table (bank_name/matched_expression) or reasonable extensions of it - do not invent unfounded matches.
-
-Then, for each new or affected block:
-- If the new content fits an existing block from the list below, return that block in block_updates with the SAME block_id, with its topic expanded if needed to reflect the new content.
-- If the new content requires a new block, return it in block_updates with a NEW block_id (one higher than the highest existing block_id) and a short, factual-neutral topic.
-- Only include blocks that are new or changed in block_updates - do not return unchanged blocks.
-
-If nothing new was found this round, return empty lists for new_rows and block_updates."""
-
-CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT = """The client was just asked which of the presented blocks feels most emotionally significant right now. Match their reply against the blocks provided below and identify current_block_id as the block_id of the block they chose."""
-
-CLASSIFY_READINESS_SYSTEM_PROMPT = """Assess the client's readiness to explore the focused block further, based on their messages throughout the conversation so far:
-- ready: extended responses, willingness to share, connecting ideas, first-person emotional statements ("אני מרגיש", "כואב לי").
-- half_ready: openness but also reservations - appropriate to process the event, but maybe not yet ready to explore it as a recurring pattern.
-- not_ready: short responses, reverting to practical, "מה אני יכול לעשות"."""
-
-CLASSIFY_SCOPE_CREEP_SYSTEM_PROMPT = """Review the conversation below, which is part of a success-moment-analysis process meant to help the client identify and name their own capabilities from a specific success story they shared. Classify whether the conversation is:
-- in_scope: still about understanding/naming capabilities from the specific story shared.
-- drifting: moving into identity, life meaning, or deep career-direction territory beyond analyzing this specific success story's capabilities."""
+# Developer-owned prompts (classifier/extraction system prompts and fixed prompt
+# scaffolding). Unlike prompts.json/messages.json, not exposed in Keystatic.
+with open(Path(__file__).parent / "const_prompts.json", "r", encoding="utf-8") as _const_prompts_file:
+    CONST_PROMPTS: dict = json.load(_const_prompts_file)
 
 PRACTICAL_TRACK_PAUSE_PHRASE = "יצאתי לחשוב"
 
 PRACTICAL_TRACK_PAUSE_STRIP_CHARS = " \t\n\r.,!?;:\"'״׳"
-
-CLASSIFY_FROM_PRACTICAL_TRACK_SYSTEM_PROMPT = """Review the conversation below. Classify the client's latest message as one of:
-- pausing: the client indicates they want to pause the conversation and step away to think it over.
-- capability_doubt: the client explicitly asks for help evaluating whether they have a capability or resource required for their goal. Doubt alone, even clearly stated, is NOT sufficient on its own - the client can voice and resolve doubt themselves, which stays continuing. Only classify capability_doubt when the client explicitly asks for help assessing it.
-- continuing: neither of the above - they are continuing the conversation normally, including cases where they voice a doubt but resolve or set it aside themselves without asking for help.
-
-Examples (Hebrew), verbatim from the source document:
-
-דוגמא א (continuing, לא capability_doubt):
-הלקוח - ברור לי שאני לא יכול לחשוב על כל מה שצריך לדעת, אני אלמד תוך כדי, ואני שוקל לעבוד כמה חודשים בחומוסייה כדי ללמוד
-
-דוגמא ב (continuing, לא capability_doubt - גבולי):
-הלקוח - אני יודע שהחלק האסתטי במסעדה חשוב, אפילו שזה חומוסייה פשוטה, צריך חשיבה עיצובית, לא בטוח שיש לי את זה, אבל זה לא כל כך משנה, אני לא צריך לדעת הכל, העיקר לדעת להיעזר
-
-דוגמא ג (capability_doubt):
-הלקוח - בנוסף לחומוס אני רוצה להציע כמה תבשילים, אני חושב על מאכלים עממיים. אבל מעולם לא בישלתי ואני לא רוצה לסמוך על טבח. לפחות לא בהתחלה. איך אני בודק עד כמה יש לי את זה?"""
 
 
 class OpeningClassification(BaseModel):
@@ -268,7 +191,7 @@ def classify_opening(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_OPENING_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_opening"]},
                 {"role": "user", "content": first_message},
             ]
         )
@@ -398,7 +321,7 @@ def classify_yes_no_other(message_text: str) -> Literal["yes", "no", "other"]:
     structured_llm = llm.with_structured_output(YesNoOtherResult)
     result = structured_llm.invoke(
         [
-            {"role": "system", "content": CLASSIFY_YES_NO_OTHER_SYSTEM_PROMPT},
+            {"role": "system", "content": CONST_PROMPTS["classify_yes_no_other"]},
             {"role": "user", "content": message_text},
         ]
     )
@@ -529,7 +452,7 @@ def classify_content_state(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_CONTENT_STATE_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_content_state"]},
                 {"role": "user", "content": last_message},
             ]
         )
@@ -718,7 +641,7 @@ def classify_scope_creep(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_SCOPE_CREEP_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_scope_creep"]},
                 {"role": "user", "content": conversation_text},
             ]
         )
@@ -897,17 +820,8 @@ def success_analysis_conversation(state: GraphState) -> dict:
     if rag_context:
         retrieved_text = "\n\n".join(chunk.get("text") or "" for chunk in rag_context)
         user_content = (
-            "The following is internal background knowledge retrieved to support your listening "
-            "and questioning - it is not information about this specific client. It may surface "
-            "relevant possibilities, layers the client hasn't put into words, useful lines of "
-            "inquiry, ways to sharpen a general capability into a concrete one, or possible "
-            "mechanisms behind a success. It does not diagnose the client and does not establish "
-            "that the client has any capability, pattern, or mechanism - the appearance of a "
-            "concept here does not make it a fact about the client. Never show this retrieved "
-            "material to the client or reference it as a source. Any hypothesis you offer must "
-            "also be grounded in something the client actually said, and must be presented as a "
-            "hypothesis to check, not as a determined fact.\n\n"
-            f"[INTERNAL RETRIEVED KNOWLEDGE]\n{retrieved_text}\n[/INTERNAL RETRIEVED KNOWLEDGE]\n\n"
+            CONST_PROMPTS["success_analysis_rag_preamble"]
+            + f"[INTERNAL RETRIEVED KNOWLEDGE]\n{retrieved_text}\n[/INTERNAL RETRIEVED KNOWLEDGE]\n\n"
             f"{conversation_text}"
         )
 
@@ -1055,7 +969,7 @@ def build_expressions_table(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": BUILD_EXPRESSIONS_TABLE_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["build_expressions_table"]},
                 {"role": "user", "content": user_content},
             ]
         )
@@ -1104,7 +1018,7 @@ def build_blocks(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": BUILD_BLOCKS_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["build_blocks"]},
                 {"role": "user", "content": rows_text},
             ]
         )
@@ -1160,7 +1074,7 @@ def color_blocks(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": COLOR_BLOCKS_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["color_blocks"]},
                 {"role": "user", "content": user_content},
             ]
         )
@@ -1251,7 +1165,7 @@ def classify_present_choice(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_PRESENT_CHOICE_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_present_choice"]},
                 {
                     "role": "user",
                     "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
@@ -1340,7 +1254,7 @@ def classify_block_target(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_BLOCK_TARGET_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_block_target"]},
                 {
                     "role": "user",
                     "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
@@ -1442,7 +1356,7 @@ def deepen_round(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": DEEPEN_ROUND_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["deepen_round"]},
                 {"role": "user", "content": user_content},
             ]
         )
@@ -1592,7 +1506,7 @@ def classify_focus_choice(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_FOCUS_CHOICE_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_focus_choice"]},
                 {
                     "role": "user",
                     "content": f"Blocks:\n{blocks_text}\n\nClient reply:\n{last_message}",
@@ -1676,7 +1590,7 @@ def classify_readiness(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_READINESS_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_readiness"]},
                 {"role": "user", "content": conversation_text},
             ]
         )
@@ -1833,7 +1747,7 @@ def classify_from_practical_track(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_FROM_PRACTICAL_TRACK_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_from_practical_track"]},
                 {"role": "user", "content": conversation_text},
             ]
         )
@@ -1930,7 +1844,7 @@ def classify_direction_choice(state: GraphState) -> dict:
     try:
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": CLASSIFY_DIRECTION_CHOICE_SYSTEM_PROMPT},
+                {"role": "system", "content": CONST_PROMPTS["classify_direction_choice"]},
                 {"role": "user", "content": last_message},
             ]
         )
