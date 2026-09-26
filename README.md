@@ -23,10 +23,10 @@ A labeled edge is conditional: the label is the value returned by the routing fu
 
 ## Stage 0 · Entry & Turn Routing
 
-Every turn starts here. `route_from_start` picks the entry point based on `last_visited_node`.
+Every turn starts here. `route_from_start` picks the entry point based on `last_visited_node`. Each block lists the entry nodes of that stage; the text after `←` is the `last_visited_node` value that routes there.
 
 ```mermaid
-flowchart LR
+flowchart TD
   START_NODE(["START"])
   END_NODE(["END · end of turn"])
   classify_professional_content{{"classify_professional_content"}}
@@ -35,60 +35,58 @@ flowchart LR
   START_NODE --> classify_professional_content --> route_from_start
 
   subgraph R1["➜ Stage 1 · Opening"]
-    ref_classify_opening["classify_opening"]
-    ref_classify_content_state["classify_content_state"]
-    ref_classify_respond_check_choice["classify_respond_check_choice"]
-    ref_classify_direction_choice["classify_direction_choice"]
-    ref_classify_practical_check_choice["classify_practical_check_choice"]
+    direction TB
+    ref_classify_opening["classify_opening<br/>← first turn (no opening_status)"]
+    ref_classify_content_state["classify_content_state<br/>← invite_to_share / other (opening_status set)"]
+    ref_classify_respond_check_choice["classify_respond_check_choice<br/>← respond_with_check"]
+    ref_classify_direction_choice["classify_direction_choice<br/>← ask_direction"]
+    ref_classify_practical_check_choice["classify_practical_check_choice<br/>← ask_direction_practical_check"]
+    ref_classify_opening ~~~ ref_classify_content_state ~~~ ref_classify_respond_check_choice ~~~ ref_classify_direction_choice ~~~ ref_classify_practical_check_choice
   end
+
   subgraph R2["➜ Stage 2 · Emotional Track"]
-    ref_classify_present_choice["classify_present_choice"]
-    ref_classify_block_target["classify_block_target"]
-    ref_deepen_round["deepen_round"]
-    ref_classify_focus_choice["classify_focus_choice"]
-    ref_focus_on_block["focus_on_block"]
+    direction TB
+    ref_classify_present_choice["classify_present_choice<br/>← present_and_ask (blocks exist)"]
+    ref_classify_block_target["classify_block_target<br/>← ask_which_block / classify_block_target"]
+    ref_deepen_round["deepen_round<br/>← deepen_reply"]
+    ref_classify_focus_choice["classify_focus_choice<br/>← classify_focus_choice / focus_on_block (no block chosen by user)"]
+    ref_focus_on_block["focus_on_block<br/>← unreachable (listed as a target, never returned)"]
+    ref_classify_present_choice ~~~ ref_classify_block_target ~~~ ref_deepen_round ~~~ ref_classify_focus_choice ~~~ ref_focus_on_block
   end
+
   subgraph R3["➜ Stage 3 · Success Moments Analysis"]
-    ref_classify_success_consent["classify_success_consent"]
-    ref_classify_scope_creep["classify_scope_creep"]
-    ref_classify_pivot_consent["classify_pivot_consent"]
+    direction TB
+    ref_classify_success_consent["classify_success_consent<br/>← present_success_analysis_intro"]
+    ref_classify_scope_creep["classify_scope_creep<br/>← invite_success_story / success_analysis_conversation"]
+    ref_classify_pivot_consent["classify_pivot_consent<br/>← pivot_to_deeper_process"]
+    ref_classify_success_consent ~~~ ref_classify_scope_creep ~~~ ref_classify_pivot_consent
   end
+
   subgraph R4["➜ Stage 4 · Practical Track"]
-    ref_classify_practical_track_consent["classify_practical_track_consent"]
-    ref_classify_from_practical_track["classify_from_practical_track"]
-    ref_classify_practical_to_success_consent["classify_practical_to_success_consent"]
+    direction TB
+    ref_classify_practical_track_consent["classify_practical_track_consent<br/>← present_practical_track_intro"]
+    ref_classify_from_practical_track["classify_from_practical_track<br/>← practical_track_conversation (otherwise)"]
+    ref_classify_practical_to_success_consent["classify_practical_to_success_consent<br/>← pivot_practical_to_success"]
+    ref_classify_practical_track_consent ~~~ ref_classify_from_practical_track ~~~ ref_classify_practical_to_success_consent
   end
 
-  route_from_start -->|"other, no opening_status (first turn)"| ref_classify_opening
-  route_from_start -->|"invite_to_share / other + opening_status set"| ref_classify_content_state
-  route_from_start -->|"respond_with_check"| ref_classify_respond_check_choice
-  route_from_start -->|"ask_direction"| ref_classify_direction_choice
-  route_from_start -->|"ask_direction_practical_check"| ref_classify_practical_check_choice
-
-  route_from_start -->|"present_and_ask (blocks exist)"| ref_classify_present_choice
-  route_from_start -->|"ask_which_block / classify_block_target"| ref_classify_block_target
-  route_from_start -->|"deepen_reply"| ref_deepen_round
-  route_from_start -->|"classify_focus_choice / focus_on_block (no block chosen by user)"| ref_classify_focus_choice
-  route_from_start -.->|"unreachable"| ref_focus_on_block
-
-  route_from_start -->|"present_success_analysis_intro"| ref_classify_success_consent
-  route_from_start -->|"invite_success_story / success_analysis_conversation"| ref_classify_scope_creep
-  route_from_start -->|"pivot_to_deeper_process"| ref_classify_pivot_consent
-
-  route_from_start -->|"present_practical_track_intro"| ref_classify_practical_track_consent
-  route_from_start -->|"practical_track_conversation (otherwise)"| ref_classify_from_practical_track
-  route_from_start -->|"pivot_practical_to_success"| ref_classify_practical_to_success_consent
-  route_from_start -->|"practical_track_conversation + exact text #quot;יצאתי לחשוב#quot;"| END_NODE
+  route_from_start --> R1
+  route_from_start --> R2
+  route_from_start --> R3
+  route_from_start --> R4
+  route_from_start -->|"practical_track_conversation + #quot;יצאתי לחשוב#quot;"| END_NODE
 
   classDef classify fill:#fff3cd,stroke:#b8860b,color:#000
   classDef router fill:#ffe5d0,stroke:#fd7e14,color:#000
   classDef terminal fill:#343a40,stroke:#000,color:#fff
   classDef ref fill:#fff,stroke:#999,stroke-dasharray:4 3,color:#555
+  classDef unreachable fill:#fff,stroke:#ccc,stroke-dasharray:2 4,color:#aaa
 
   class classify_professional_content classify
   class route_from_start router
   class START_NODE,END_NODE terminal
-  class ref_classify_opening,ref_classify_content_state,ref_classify_respond_check_choice,ref_classify_direction_choice,ref_classify_practical_check_choice,ref_classify_present_choice,ref_classify_block_target,ref_deepen_round,ref_classify_focus_choice,ref_focus_on_block,ref_classify_success_consent,ref_classify_scope_creep,ref_classify_pivot_consent,ref_classify_practical_track_consent,ref_classify_from_practical_track,ref_classify_practical_to_success_consent ref
+  class ref_classify_opening,ref_classify_content_state,ref_classify_respond_check_choice,ref_classify_direction_choice,ref_classify_practical_check_choice,ref_classify_present_choice,ref_classify_block_target,ref_deepen_round,ref_classify_focus_choice,ref_classify_success_consent,ref_classify_scope_creep,ref_classify_pivot_consent,ref_classify_practical_track_consent,ref_classify_from_practical_track,ref_classify_practical_to_success_consent ref
+  class ref_focus_on_block unreachable
 ```
 
 `classify_professional_content` runs on every turn. If the content is professional, it adds a disclaimer message and continues. `"יצאתי לחשוב"` means "I'm off to think".
