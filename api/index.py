@@ -1,6 +1,7 @@
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import anthropic
 from fastapi import FastAPI
@@ -8,14 +9,24 @@ from pinecone import Pinecone
 from pydantic import BaseModel
 
 from .chat_langgraph import get_last_assistant_message, get_new_assistant_messages, run_chat_turn
-from .system_prompt import get_system_prompt, get_system_prompt_record, update_system_prompt
+from .conversation_store import save_turn
+from .system_prompt import get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
 
 logger = logging.getLogger("api.index")
 logger.setLevel(logging.INFO)
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-opus-5-5"
+CLAUDE_EFFORT = "medium"
+
+# The V0 engine prompt lives in the repo so every change to it is versioned.
+# It's read on every request, so edits apply without restarting the server.
+ENGINE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "engine.md"
+
+
+def get_engine_prompt() -> str:
+    return ENGINE_PROMPT_PATH.read_text(encoding="utf-8")
 
 
 @app.get("/api/time")
@@ -123,6 +134,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    conversation_id: str | None = None
 
 
 @app.post("/api/chat")
@@ -136,17 +148,35 @@ def chat(request: ChatRequest):
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        # fallbacks="default" re-runs a request the safety classifiers decline
+        # on a fallback model inside the same call, instead of just stopping.
+        response = client.beta.messages.create(
             model=CLAUDE_MODEL,
-            system=get_system_prompt(),
-            max_tokens=1024,
+            system=get_engine_prompt(),
+            max_tokens=16000,
+            output_config={"effort": CLAUDE_EFFORT},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
             messages=[
                 {"role": m.role, "content": m.content} for m in request.messages
             ],
         )
-        content = "".join(
-            block.text for block in response.content if block.type == "text"
-        )
+        if response.stop_reason == "refusal":
+            content = "(Claude declined to answer this message.)"
+        else:
+            content = "".join(
+                block.text for block in response.content if block.type == "text"
+            )
+
+        if request.conversation_id and request.messages:
+            save_turn(
+                request.conversation_id,
+                user_message=request.messages[-1].content,
+                assistant_message=content,
+                model=response.model,
+                stop_reason=response.stop_reason,
+            )
+
         return {"role": "assistant", "content": content}
     except Exception as exc:
         return {

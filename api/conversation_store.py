@@ -1,0 +1,43 @@
+import logging
+from typing import Optional
+
+from .system_prompt import get_supabase_client
+
+logger = logging.getLogger("api.conversation_store")
+
+CONVERSATIONS_TABLE = "conversations"
+MESSAGES_TABLE = "conversation_messages"
+
+
+def save_turn(
+    conversation_id: str,
+    user_message: str,
+    assistant_message: str,
+    model: str,
+    stop_reason: Optional[str] = None,
+) -> None:
+    # Persistence is best-effort: a missing Supabase config or a failed write
+    # must never break the chat itself, so this only logs.
+    client = get_supabase_client()
+    if client is None:
+        logger.info("Supabase not configured - conversation %s not saved.", conversation_id)
+        return
+
+    try:
+        client.table(CONVERSATIONS_TABLE).upsert(
+            {"id": conversation_id}, on_conflict="id", ignore_duplicates=True
+        ).execute()
+        client.table(MESSAGES_TABLE).insert(
+            [
+                {"conversation_id": conversation_id, "role": "user", "content": user_message},
+                {
+                    "conversation_id": conversation_id,
+                    "role": "assistant",
+                    "content": assistant_message,
+                    "model": model,
+                    "stop_reason": stop_reason,
+                },
+            ]
+        ).execute()
+    except Exception:
+        logger.exception("Failed to save turn for conversation %s", conversation_id)
