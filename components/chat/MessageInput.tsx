@@ -31,6 +31,7 @@ export default function MessageInput({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="הקלידו הודעה..."
+        dir="auto"
         className="flex-1 rounded-full border border-gray-300 px-4 py-2 text-sm outline-none focus:border-blue-500"
       />
       <button

@@ -14,7 +14,7 @@ export default function ChatWindow() {
   } = useChat();
 
   return (
-    <div className="flex h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-lg">
+    <div className="flex h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-lg">
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
         <h1 className="text-lg font-semibold text-gray-900">
           Awareness Helper

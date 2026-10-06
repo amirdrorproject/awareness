@@ -7,7 +7,10 @@ export default function MessageBubble({ message }: { message: Message }) {
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm shadow-sm ${
+        // dir="auto" lays each bubble out by its own text, so Hebrew reads
+        // right-to-left with punctuation in place even though the page is LTR.
+        dir="auto"
+        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed shadow-sm ${
           isUser
             ? "bg-blue-600 text-white rounded-br-sm"
             : "bg-gray-100 text-gray-900 rounded-bl-sm"
@@ -16,7 +19,9 @@ export default function MessageBubble({ message }: { message: Message }) {
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         ) : (
-          <ReactMarkdown>{message.content}</ReactMarkdown>
+          <div className="space-y-2 break-words">
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+          </div>
         )}
       </div>
     </div>
