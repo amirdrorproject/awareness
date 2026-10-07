@@ -1,5 +1,27 @@
 import ReactMarkdown from "react-markdown";
-import type { Message } from "@/lib/chat/types";
+import type { Message, ToolCall } from "@/lib/chat/types";
+
+// Debug note under a reply: what Claude searched for and which bank entries
+// came back. Shown to whoever runs the simulation, not part of Claude's text.
+function ToolCallNote({ call }: { call: ToolCall }) {
+  const query = String(call.input.query ?? "");
+  return (
+    <div className="mt-2 border-t border-gray-300 pt-1.5 text-xs text-gray-500">
+      <span>🔎 {call.name}: "{query}"</span>
+      {call.error ? (
+        <div className="text-red-600">{call.error}</div>
+      ) : (
+        <ul className="mt-0.5">
+          {call.output?.hits?.map((hit) => (
+            <li key={hit.title}>
+              {hit.title} ({hit.score})
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
@@ -23,6 +45,9 @@ export default function MessageBubble({ message }: { message: Message }) {
             <ReactMarkdown>{message.content}</ReactMarkdown>
           </div>
         )}
+        {message.toolCalls?.map((call, index) => (
+          <ToolCallNote key={index} call={call} />
+        ))}
       </div>
     </div>
   );

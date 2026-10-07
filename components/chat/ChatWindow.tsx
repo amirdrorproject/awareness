@@ -11,6 +11,8 @@ export default function ChatWindow() {
     isAssistantTyping,
     useLangGraph,
     setUseLangGraph,
+    useTools,
+    setUseTools,
   } = useChat();
 
   return (
@@ -19,14 +21,25 @@ export default function ChatWindow() {
         <h1 className="text-lg font-semibold text-gray-900">
           Awareness Helper
         </h1>
-        <label className="flex items-center gap-1.5 text-xs text-gray-500">
-          <input
-            type="checkbox"
-            checked={useLangGraph}
-            onChange={(e) => setUseLangGraph(e.target.checked)}
-          />
-          Use LangGraph (experimental)
-        </label>
+        <div className="flex flex-col items-end gap-1">
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={useTools}
+              disabled={useLangGraph}
+              onChange={(e) => setUseTools(e.target.checked)}
+            />
+            Knowledge tools
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={useLangGraph}
+              onChange={(e) => setUseLangGraph(e.target.checked)}
+            />
+            Use LangGraph (experimental)
+          </label>
+        </div>
       </div>
       <MessageList messages={messages} isAssistantTyping={isAssistantTyping} />
       <MessageInput onSend={sendMessage} />

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from .chat_langgraph import get_last_assistant_message, get_new_assistant_messages, run_chat_turn
 from .conversation_store import save_turn
+from .knowledge import TOOLS, run_tool
 from .system_prompt import get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
@@ -19,6 +20,7 @@ logger.setLevel(logging.INFO)
 
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_EFFORT = "medium"
+MAX_TOOL_ROUNDS = 3
 
 # The V0 engine prompt lives in the repo so every change to it is versioned.
 # It's read on every request, so edits apply without restarting the server.
@@ -135,6 +137,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     conversation_id: str | None = None
+    use_tools: bool = False
 
 
 @app.post("/api/chat")
@@ -148,19 +151,51 @@ def chat(request: ChatRequest):
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        # fallbacks="default" re-runs a request the safety classifiers decline
-        # on a fallback model inside the same call, instead of just stopping.
-        response = client.beta.messages.create(
-            model=CLAUDE_MODEL,
-            system=get_engine_prompt(),
-            max_tokens=16000,
-            output_config={"effort": CLAUDE_EFFORT},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            messages=[
-                {"role": m.role, "content": m.content} for m in request.messages
-            ],
-        )
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        tool_calls = []
+
+        # Claude decides whether to call a tool; each call is run here and its
+        # result sent back, until Claude answers in text. On the last round
+        # tools are switched off, so the turn always ends with a reply.
+        for round_number in range(MAX_TOOL_ROUNDS + 1):
+            tool_params = {}
+            if request.use_tools:
+                tool_params["tools"] = TOOLS
+                if round_number == MAX_TOOL_ROUNDS:
+                    tool_params["tool_choice"] = {"type": "none"}
+            # fallbacks="default" re-runs a request the safety classifiers decline
+            # on a fallback model inside the same call, instead of just stopping.
+            response = client.beta.messages.create(
+                model=CLAUDE_MODEL,
+                system=get_engine_prompt(),
+                max_tokens=16000,
+                output_config={"effort": CLAUDE_EFFORT},
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+                messages=messages,
+                **tool_params,
+            )
+            if response.stop_reason != "tool_use":
+                break
+
+            # The full content (thinking blocks included) goes back unchanged.
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                try:
+                    result_text, record = run_tool(block.name, block.input)
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+                    tool_calls.append({"name": block.name, "input": block.input, "output": record})
+                except Exception as exc:
+                    logger.exception("Tool %s failed", block.name)
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": block.id, "content": f"Error: {exc}", "is_error": True}
+                    )
+                    tool_calls.append({"name": block.name, "input": block.input, "error": str(exc)})
+            messages.append({"role": "user", "content": tool_results})
+
         if response.stop_reason == "refusal":
             content = "(Claude declined to answer this message.)"
         else:
@@ -175,9 +210,11 @@ def chat(request: ChatRequest):
                 assistant_message=content,
                 model=response.model,
                 stop_reason=response.stop_reason,
+                tools_enabled=request.use_tools,
+                tool_calls=tool_calls,
             )
 
-        return {"role": "assistant", "content": content}
+        return {"role": "assistant", "content": content, "tool_calls": tool_calls}
     except Exception as exc:
         return {
             "role": "assistant",
