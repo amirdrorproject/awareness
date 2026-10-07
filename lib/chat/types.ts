@@ -1,10 +1,13 @@
 export type MessageRole = "user" | "assistant";
 export type MessageSource = "chat" | "langgraph";
 
+export type KnowledgeMode = "none" | "search" | "full";
+
 export interface ToolCall {
   name: string;
   input: Record<string, unknown>;
-  output?: { query?: string; hits?: { title: string; score: number }[] };
+  // score is only present for search hits; the full bank has none.
+  output?: { query?: string; hits?: { title: string; score?: number }[] };
   error?: string;
 }
 

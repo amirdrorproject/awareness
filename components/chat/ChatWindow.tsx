@@ -1,6 +1,7 @@
 "use client";
 
 import { useChat } from "@/lib/chat/useChat";
+import type { KnowledgeMode } from "@/lib/chat/types";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 
@@ -11,8 +12,8 @@ export default function ChatWindow() {
     isAssistantTyping,
     useLangGraph,
     setUseLangGraph,
-    useTools,
-    setUseTools,
+    knowledgeMode,
+    setKnowledgeMode,
   } = useChat();
 
   return (
@@ -23,13 +24,17 @@ export default function ChatWindow() {
         </h1>
         <div className="flex flex-col items-end gap-1">
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
-            <input
-              type="checkbox"
-              checked={useTools}
+            Expression bank
+            <select
+              value={knowledgeMode}
               disabled={useLangGraph}
-              onChange={(e) => setUseTools(e.target.checked)}
-            />
-            Knowledge tools
+              onChange={(e) => setKnowledgeMode(e.target.value as KnowledgeMode)}
+              className="rounded border border-gray-300 bg-white px-1 py-0.5 text-xs"
+            >
+              <option value="none">None</option>
+              <option value="search">Search (retrieval)</option>
+              <option value="full">Full bank</option>
+            </select>
           </label>
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
             <input

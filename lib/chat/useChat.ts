@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { Message, MessageSource, ToolCall } from "./types";
+import type { KnowledgeMode, Message, MessageSource, ToolCall } from "./types";
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [useLangGraph, setUseLangGraph] = useState(false);
-  const [useTools, setUseTools] = useState(true);
+  const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("search");
 
   // Mirrors `messages` so sendMessage can read the current transcript without
   // doing its fetch inside a setState updater - React may run updaters twice
@@ -89,7 +89,7 @@ export function useChat() {
               body: JSON.stringify({
                 messages: next.map(({ role, content }) => ({ role, content })),
                 conversation_id: threadIdRef.current,
-                use_tools: useTools,
+                knowledge_mode: knowledgeMode,
               }),
             });
             if (!res.ok) throw new Error(`Request failed: ${res.status}`);
@@ -122,7 +122,7 @@ export function useChat() {
         setIsAssistantTyping(false);
       })();
     },
-    [useLangGraph, useTools, appendMessages]
+    [useLangGraph, knowledgeMode, appendMessages]
   );
 
   return {
@@ -131,7 +131,7 @@ export function useChat() {
     isAssistantTyping,
     useLangGraph,
     setUseLangGraph,
-    useTools,
-    setUseTools,
+    knowledgeMode,
+    setKnowledgeMode,
   };
 }

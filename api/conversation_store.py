@@ -15,7 +15,7 @@ def save_turn(
     assistant_message: str,
     model: str,
     stop_reason: Optional[str] = None,
-    tools_enabled: bool = False,
+    knowledge_mode: str = "none",
     tool_calls: Optional[list] = None,
 ) -> None:
     # Persistence is best-effort: a missing Supabase config or a failed write
@@ -33,7 +33,11 @@ def save_turn(
         "model": model,
         "stop_reason": stop_reason,
     }
-    tool_fields = {"tools_enabled": tools_enabled, "tool_calls": tool_calls or []}
+    tool_fields = {
+        "tools_enabled": knowledge_mode != "none",
+        "tool_calls": tool_calls or [],
+        "knowledge_mode": knowledge_mode,
+    }
 
     try:
         client.table(CONVERSATIONS_TABLE).upsert(
