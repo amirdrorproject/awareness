@@ -7,7 +7,7 @@ function ToolCallNote({ call }: { call: ToolCall }) {
   const query = String(call.input.query ?? "");
   return (
     <div className="mt-2 border-t border-gray-300 pt-1.5 text-xs text-gray-500">
-      <span>🔎 {call.name}: "{query}"</span>
+      <span>🔎 {call.name}: &quot;{query}&quot;</span>
       {call.error ? (
         <div className="text-red-600">{call.error}</div>
       ) : (
