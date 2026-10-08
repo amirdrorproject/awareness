@@ -13,11 +13,12 @@ def save_turn(
     conversation_id: str,
     user_message: str,
     assistant_message: str,
-    model: str,
+    model: Optional[str],
     stop_reason: Optional[str] = None,
     knowledge_mode: str = "none",
     tool_calls: Optional[list] = None,
     client_name: Optional[str] = None,
+    trace: Optional[dict] = None,
 ) -> None:
     # Persistence is best-effort: a missing Supabase config or a failed write
     # must never break the chat itself, so this only logs.
@@ -39,6 +40,14 @@ def save_turn(
         "tool_calls": tool_calls or [],
         "knowledge_mode": knowledge_mode,
     }
+    # Each later column comes from a later SQL file; try the fullest row first
+    # and drop columns until one fits, so a missing migration loses only the
+    # newest details, never the messages themselves.
+    attempts = [
+        {**assistant_row, **tool_fields, "trace": trace},
+        {**assistant_row, **tool_fields},
+        assistant_row,
+    ]
 
     try:
         client.table(CONVERSATIONS_TABLE).upsert(
@@ -51,12 +60,13 @@ def save_turn(
                 client.table(CONVERSATIONS_TABLE).update({"client_name": client_name}).eq("id", conversation_id).execute()
             except Exception:
                 logger.exception("Failed to set client_name on conversation %s", conversation_id)
-        try:
-            client.table(MESSAGES_TABLE).insert([user_row, {**assistant_row, **tool_fields}]).execute()
-        except Exception:
-            # The tool columns come from supabase/tool_calls.sql. Until it has been
-            # run, still save the messages themselves rather than losing the turn.
-            logger.exception("Saving with tool columns failed - retrying without them")
-            client.table(MESSAGES_TABLE).insert([user_row, assistant_row]).execute()
+        for i, row in enumerate(attempts):
+            try:
+                client.table(MESSAGES_TABLE).insert([user_row, row]).execute()
+                break
+            except Exception:
+                if i == len(attempts) - 1:
+                    raise
+                logger.exception("Saving turn failed - retrying with fewer columns (run the supabase/*.sql files)")
     except Exception:
         logger.exception("Failed to save turn for conversation %s", conversation_id)

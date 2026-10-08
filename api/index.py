@@ -1,6 +1,7 @@
 import hmac
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -141,9 +142,10 @@ def chat(request: ChatRequest):
             "content": "Server misconfiguration: ANTHROPIC_API_KEY is not set.",
         }
 
+    client_name = (request.client_name or "").strip()
+    started = time.monotonic()
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        client_name = (request.client_name or "").strip()
         memory = load_latest_memory(client_name) if client_name else None
         reply = generate_reply(
             client,
@@ -151,30 +153,49 @@ def chat(request: ChatRequest):
             request.knowledge_mode,
             system_suffix=format_memory_for_prompt(memory) if memory else None,
         )
-
+        reply["trace"]["memory_loaded"] = memory is not None
+    except Exception as exc:
+        logger.exception("chat failed for conversation %s", request.conversation_id)
+        content = f"Failed to reach Claude: {exc}"
+        # A failed turn is saved too, so errors show up in the run history.
+        trace = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "knowledge_mode": request.knowledge_mode,
+            "latency_s": round(time.monotonic() - started, 2),
+        }
         if request.conversation_id and request.messages:
             save_turn(
                 request.conversation_id,
                 user_message=request.messages[-1].content,
-                assistant_message=reply["content"],
-                model=reply["model"],
-                stop_reason=reply["stop_reason"],
+                assistant_message=content,
+                model=None,
+                stop_reason="error",
                 knowledge_mode=request.knowledge_mode,
-                tool_calls=reply["tool_calls"],
                 client_name=client_name or None,
+                trace=trace,
             )
+        return {"role": "assistant", "content": content, "trace": trace}
 
-        return {
-            "role": "assistant",
-            "content": reply["content"],
-            "tool_calls": reply["tool_calls"],
-            "memory_loaded": memory is not None,
-        }
-    except Exception as exc:
-        return {
-            "role": "assistant",
-            "content": f"Failed to reach Claude: {exc}",
-        }
+    if request.conversation_id and request.messages:
+        save_turn(
+            request.conversation_id,
+            user_message=request.messages[-1].content,
+            assistant_message=reply["content"],
+            model=reply["model"],
+            stop_reason=reply["stop_reason"],
+            knowledge_mode=request.knowledge_mode,
+            tool_calls=reply["tool_calls"],
+            client_name=client_name or None,
+            trace=reply["trace"],
+        )
+
+    return {
+        "role": "assistant",
+        "content": reply["content"],
+        "tool_calls": reply["tool_calls"],
+        "memory_loaded": memory is not None,
+        "trace": reply["trace"],
+    }
 
 
 class EndConversationRequest(BaseModel):

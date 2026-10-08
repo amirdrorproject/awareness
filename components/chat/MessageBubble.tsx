@@ -1,33 +1,6 @@
 import ReactMarkdown from "react-markdown";
-import type { Message, ToolCall } from "@/lib/chat/types";
-
-// Debug note under a reply: what Claude searched for and which bank entries
-// came back. Shown to whoever runs the simulation, not part of Claude's text.
-function ToolCallNote({ call }: { call: ToolCall }) {
-  const query = call.input.query;
-  const hits = call.output?.hits ?? [];
-  return (
-    <div className="mt-2 border-t border-gray-300 pt-1.5 text-xs text-gray-500">
-      <span>
-        🔎 {call.name}
-        {typeof query === "string" && <>: &quot;{query}&quot;</>}
-      </span>
-      {call.error ? (
-        <div className="text-red-600">{call.error}</div>
-      ) : hits.some((hit) => hit.score !== undefined) ? (
-        <ul className="mt-0.5">
-          {hits.map((hit) => (
-            <li key={hit.title}>
-              {hit.title} ({hit.score})
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="mt-0.5">Full bank: {hits.length} entries</div>
-      )}
-    </div>
-  );
-}
+import type { Message } from "@/lib/chat/types";
+import RunDetails from "./RunDetails";
 
 export default function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
@@ -51,9 +24,8 @@ export default function MessageBubble({ message }: { message: Message }) {
             <ReactMarkdown>{message.content}</ReactMarkdown>
           </div>
         )}
-        {message.toolCalls?.map((call, index) => (
-          <ToolCallNote key={index} call={call} />
-        ))}
+        {/* Shown to whoever runs the simulation, not part of Claude's reply. */}
+        {message.trace && <RunDetails trace={message.trace} toolCalls={message.toolCalls} />}
       </div>
     </div>
   );

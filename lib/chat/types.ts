@@ -11,6 +11,30 @@ export interface ToolCall {
   error?: string;
 }
 
+// How a reply came about, from the backend (api/engine.py): shown in the
+// run-details panel under each reply. A failed turn carries only `error`.
+export interface RunTrace {
+  model?: string;
+  effort?: string;
+  stop_reason?: string;
+  prompt?: { source: "admin" | "file"; created_at: string | null; note: string | null };
+  system_suffix?: string | null;
+  memory_loaded?: boolean;
+  knowledge_mode?: string;
+  history_messages?: number;
+  api_calls?: number;
+  thinking?: string[];
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+  };
+  cost_usd?: number | null;
+  latency_s?: number;
+  error?: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -19,4 +43,5 @@ export interface Message {
   source?: MessageSource;
   internalAuditLog?: string;
   toolCalls?: ToolCall[];
+  trace?: RunTrace;
 }

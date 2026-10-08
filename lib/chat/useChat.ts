@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KnowledgeMode, Message, MessageSource, ToolCall } from "./types";
+import type { KnowledgeMode, Message, MessageSource, RunTrace, ToolCall } from "./types";
 
 const CLIENT_NAME_KEY = "awareness.clientName";
 
@@ -75,6 +75,7 @@ export function useChat() {
         let replyContents: string[] = [];
         let internalAuditLog: string | undefined;
         let toolCalls: ToolCall[] | undefined;
+        let trace: RunTrace | undefined;
 
         try {
           if (useLangGraph) {
@@ -123,6 +124,7 @@ export function useChat() {
             const data = await res.json();
             replyContents = data.content ? [data.content] : [];
             toolCalls = data.tool_calls;
+            trace = data.trace;
             setMemoryLoaded(Boolean(data.memory_loaded));
           }
         } catch (err) {
@@ -144,6 +146,7 @@ export function useChat() {
             // avoid showing the same debug info under multiple bubbles.
             internalAuditLog: index === replyContents.length - 1 ? internalAuditLog : undefined,
             toolCalls: index === replyContents.length - 1 ? toolCalls : undefined,
+            trace: index === replyContents.length - 1 ? trace : undefined,
           }));
           appendMessages(replies);
         }
