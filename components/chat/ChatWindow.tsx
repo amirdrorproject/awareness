@@ -31,9 +31,10 @@ export default function ChatWindow() {
               onChange={(e) => setKnowledgeMode(e.target.value as KnowledgeMode)}
               className="rounded border border-gray-300 bg-white px-1 py-0.5 text-xs"
             >
-              <option value="none">None</option>
-              <option value="search">Search (retrieval)</option>
+              {/* "search" (retrieval) stays available to the API and the
+                  comparison script, but full bank was chosen over it. */}
               <option value="full">Full bank</option>
+              <option value="none">None</option>
             </select>
           </label>
           <label className="flex items-center gap-1.5 text-xs text-gray-500">

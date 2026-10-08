@@ -20,10 +20,19 @@ def get_engine_prompt() -> str:
     return ENGINE_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def generate_reply(client: anthropic.Anthropic, messages: list[dict], knowledge_mode: str = "none") -> dict:
+def generate_reply(
+    client: anthropic.Anthropic,
+    messages: list[dict],
+    knowledge_mode: str = "none",
+    system_suffix: str | None = None,
+) -> dict:
     """Runs one agent turn: the engine prompt + conversation, plus whichever
-    knowledge tool the mode allows. Returns the reply text and every tool call."""
+    knowledge tool the mode allows. Returns the reply text and every tool call.
+
+    `system_suffix` appends text to the engine prompt - used by the test
+    scripts to try a prompt variant without touching prompts/engine.md."""
     tools = TOOLS_BY_MODE[knowledge_mode]
+    system = get_engine_prompt() + (f"\n\n{system_suffix}" if system_suffix else "")
     messages = list(messages)
     tool_calls = []
 
@@ -40,7 +49,7 @@ def generate_reply(client: anthropic.Anthropic, messages: list[dict], knowledge_
         # on a fallback model inside the same call, instead of just stopping.
         response = client.beta.messages.create(
             model=CLAUDE_MODEL,
-            system=get_engine_prompt(),
+            system=system,
             max_tokens=16000,
             output_config={"effort": CLAUDE_EFFORT},
             betas=["server-side-fallback-2026-07-01"],

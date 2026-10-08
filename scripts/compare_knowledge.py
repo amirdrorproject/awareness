@@ -1,12 +1,13 @@
-"""Runs the same conversation openings through the agent with each knowledge
-mode (no bank / retrieval / full bank) and writes the replies side by side.
+"""Runs the same conversation openings through the agent under several
+variants (no bank / retrieval / full bank / a prompt nudge with no bank) and
+writes the replies side by side.
 
 The question it serves: does access to the expression bank improve how the
 agent identifies what the client brings, without making the conversation
 mechanical - and does Claude reach for the bank only when it's relevant?
 
 Usage (from the repo root):
-    python -m scripts.compare_knowledge --out results.json [--runs 2]
+    python -m scripts.compare_knowledge --out results.json [--runs 2] [--variants none full nudge]
 """
 
 import argparse
@@ -19,7 +20,21 @@ import anthropic
 from dotenv import dotenv_values
 
 from api.engine import CLAUDE_EFFORT, CLAUDE_MODEL, generate_reply
-from api.knowledge import KNOWLEDGE_MODES
+
+# Each variant = (knowledge mode, text appended to the engine prompt).
+# "nudge" is the control for the bank: it gives the same instruction the bank
+# tool's description gives ("consider the emotional side before a hypothesis")
+# but no bank. If it matches "full", what helped was the pause, not the content.
+NUDGE = (
+    "כשדברי הלקוח נושאים מטען רגשי או רמז לכזה, עצור ושקול את הצד הרגשי "
+    "לפני שאתה מציע השערה."
+)
+VARIANTS = {
+    "none": ("none", None),
+    "search": ("search", None),
+    "full": ("full", None),
+    "nudge": ("none", NUDGE),
+}
 
 # Each scenario is a conversation so far, ending with the client's message the
 # agent has to answer. `expect_bank` is the hypothesis being tested: whether
@@ -85,16 +100,17 @@ def as_api_messages(texts: list[str]) -> list[dict]:
     return [{"role": "user" if i % 2 == 0 else "assistant", "content": text} for i, text in enumerate(texts)]
 
 
-def run_one(client: anthropic.Anthropic, scenario: dict, mode: str, run: int) -> dict:
+def run_one(client: anthropic.Anthropic, scenario: dict, variant: str, run: int) -> dict:
+    knowledge_mode, system_suffix = VARIANTS[variant]
     started = time.time()
     try:
-        reply = generate_reply(client, as_api_messages(scenario["messages"]), mode)
+        reply = generate_reply(client, as_api_messages(scenario["messages"]), knowledge_mode, system_suffix)
         error = None
     except Exception as exc:
         reply, error = {"content": "", "tool_calls": [], "stop_reason": None}, str(exc)
     return {
         "scenario": scenario["id"],
-        "mode": mode,
+        "mode": variant,
         "run": run,
         "seconds": round(time.time() - started, 1),
         "reply": reply["content"],
@@ -116,21 +132,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="Path of the JSON results file to write.")
     parser.add_argument("--runs", type=int, default=1, help="Runs per scenario and mode (replies vary between runs).")
+    parser.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=list(VARIANTS))
     parser.add_argument("--workers", type=int, default=6)
     args = parser.parse_args()
 
     os.environ.update({k: v for k, v in dotenv_values(".env.local").items() if v and k not in os.environ})
     client = anthropic.Anthropic()
 
-    jobs = [(s, mode, run) for s in SCENARIOS for mode in KNOWLEDGE_MODES for run in range(args.runs)]
-    print(f"Running {len(jobs)} turns ({len(SCENARIOS)} scenarios x {len(KNOWLEDGE_MODES)} modes x {args.runs} runs)...")
+    jobs = [(s, variant, run) for s in SCENARIOS for variant in args.variants for run in range(args.runs)]
+    print(f"Running {len(jobs)} turns ({len(SCENARIOS)} scenarios x {len(args.variants)} variants x {args.runs} runs)...")
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(lambda job: run_one(client, *job), jobs))
 
     output = {
         "model": CLAUDE_MODEL,
         "effort": CLAUDE_EFFORT,
-        "modes": list(KNOWLEDGE_MODES),
+        "modes": args.variants,
         "scenarios": SCENARIOS,
         "results": results,
     }

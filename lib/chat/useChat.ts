@@ -7,7 +7,7 @@ export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [useLangGraph, setUseLangGraph] = useState(false);
-  const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("search");
+  const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("full");
 
   // Mirrors `messages` so sendMessage can read the current transcript without
   // doing its fetch inside a setState updater - React may run updaters twice
