@@ -1,9 +1,9 @@
 import logging
-from pathlib import Path
 
 import anthropic
 
 from .knowledge import TOOLS_BY_MODE, run_tool
+from .prompts import get_prompt
 
 logger = logging.getLogger("api.engine")
 
@@ -11,13 +11,11 @@ CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_EFFORT = "medium"
 MAX_TOOL_ROUNDS = 3
 
-# The engine prompt lives in the repo so every change to it is versioned.
-# It's read on every request, so edits apply without restarting the server.
-ENGINE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "engine.md"
-
 
 def get_engine_prompt() -> str:
-    return ENGINE_PROMPT_PATH.read_text(encoding="utf-8")
+    # The newest version saved from /admin, else prompts/engine.md. Read on
+    # every request, so an edit applies to the very next message.
+    return get_prompt("engine")
 
 
 def generate_reply(

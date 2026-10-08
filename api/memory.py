@@ -3,19 +3,19 @@
 When a conversation is ended, Claude summarises what was established into a
 structured memory (folding in the client's earlier memory, so the latest row
 is always the whole picture). The client's next conversation gets that memory
-appended to the engine prompt. Both texts live in prompts/ so Amir can edit
-them like the engine prompt.
+appended to the engine prompt. Both texts are edited from /admin like the
+engine prompt (see prompts.py).
 """
 
 import json
 import logging
-from pathlib import Path
 from typing import Literal, Optional
 
 import anthropic
 from pydantic import BaseModel
 
 from .engine import CLAUDE_MODEL
+from .prompts import get_prompt
 from .system_prompt import get_supabase_client
 
 logger = logging.getLogger("api.memory")
@@ -23,9 +23,6 @@ logger = logging.getLogger("api.memory")
 MEMORIES_TABLE = "client_memories"
 CONVERSATIONS_TABLE = "conversations"
 
-PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-SUMMARY_PROMPT_PATH = PROMPTS_DIR / "memory_summary.md"
-CONTEXT_PROMPT_PATH = PROMPTS_DIR / "memory_context.md"
 
 
 class Capability(BaseModel):
@@ -63,7 +60,7 @@ def summarize_conversation(
         model=CLAUDE_MODEL,
         max_tokens=16000,
         output_config={"effort": "medium"},
-        system=SUMMARY_PROMPT_PATH.read_text(encoding="utf-8"),
+        system=get_prompt("memory_summary"),
         messages=[{
             "role": "user",
             "content": f"זיכרון משיחות קודמות:\n{previous_text}\n\n---\n\nהשיחה שהסתיימה:\n\n{_transcript_text(messages)}",
@@ -91,7 +88,7 @@ def format_memory_for_prompt(memory: dict) -> str:
         *(f"- חוט פתוח: {t}" for t in memory["open_threads"]),
         f"- לשון פנייה: {gender}",
     ]
-    template = CONTEXT_PROMPT_PATH.read_text(encoding="utf-8")
+    template = get_prompt("memory_context")
     return template.replace("{memory}", "\n".join(lines))
 
 

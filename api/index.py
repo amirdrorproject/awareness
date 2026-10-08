@@ -1,10 +1,11 @@
+import hmac
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Literal
 
 import anthropic
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pinecone import Pinecone
 from pydantic import BaseModel
 
@@ -12,7 +13,7 @@ from .chat_langgraph import get_last_assistant_message, get_new_assistant_messag
 from .conversation_store import save_turn
 from .engine import generate_reply
 from .memory import format_memory_for_prompt, load_latest_memory, save_memory, summarize_conversation
-from .system_prompt import get_system_prompt_record, update_system_prompt
+from .prompts import PROMPTS, get_prompt_record, list_versions, save_version
 
 app = FastAPI()
 
@@ -204,23 +205,52 @@ def end_conversation(request: EndConversationRequest):
         return {"error": f"Failed to save memory: {exc}"}
 
 
-class SystemPromptUpdateRequest(BaseModel):
+def require_admin(x_admin_password: str | None = Header(default=None)) -> None:
+    # One shared password (ADMIN_PASSWORD) guards every /api/admin route.
+    # With no password configured, editing is off rather than open.
+    expected = os.environ.get("ADMIN_PASSWORD")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin is disabled: ADMIN_PASSWORD is not set.")
+    if not x_admin_password or not hmac.compare_digest(x_admin_password.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Wrong password.")
+
+
+def _check_prompt_name(name: str) -> None:
+    if name not in PROMPTS:
+        raise HTTPException(status_code=404, detail=f"Unknown prompt: {name}")
+
+
+@app.get("/api/admin/prompts", dependencies=[Depends(require_admin)])
+def admin_list_prompts():
+    return {
+        "prompts": [
+            {"name": name, "label": label, **get_prompt_record(name)}
+            for name, (_file, label) in PROMPTS.items()
+        ]
+    }
+
+
+@app.get("/api/admin/prompts/{name}/versions", dependencies=[Depends(require_admin)])
+def admin_prompt_versions(name: str):
+    _check_prompt_name(name)
+    return {"versions": list_versions(name)}
+
+
+class PromptSaveRequest(BaseModel):
     content: str
+    note: str | None = None
 
 
-@app.get("/api/admin/system-prompt")
-def get_system_prompt_admin():
-    record = get_system_prompt_record()
-    return {"content": record.get("content"), "updated_at": record.get("updated_at")}
-
-
-@app.post("/api/admin/system-prompt")
-def update_system_prompt_admin(request: SystemPromptUpdateRequest):
+@app.post("/api/admin/prompts/{name}", dependencies=[Depends(require_admin)])
+def admin_save_prompt(name: str, request: PromptSaveRequest):
+    _check_prompt_name(name)
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="The prompt can't be empty.")
     try:
-        record = update_system_prompt(request.content)
-        return {"content": record.get("content"), "updated_at": record.get("updated_at")}
+        return save_version(name, request.content, (request.note or "").strip())
     except Exception as exc:
-        return {"error": f"Failed to update system prompt: {exc}"}
+        logger.exception("Saving prompt %r failed", name)
+        raise HTTPException(status_code=500, detail=f"Failed to save: {exc}")
 
 
 class LangGraphChatRequest(BaseModel):
