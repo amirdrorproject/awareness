@@ -1,13 +1,39 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { KnowledgeMode, Message, MessageSource, ToolCall } from "./types";
+
+const CLIENT_NAME_KEY = "awareness.clientName";
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [useLangGraph, setUseLangGraph] = useState(false);
   const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("full");
+  // Who the client is: conversations under the same name share memory.
+  // Remembered in this browser so a simulation can be resumed after a refresh.
+  const [clientName, setClientNameState] = useState("");
+  // Whether the last reply was written with memory from earlier conversations.
+  const [memoryLoaded, setMemoryLoaded] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [isEnding, setIsEnding] = useState(false);
+
+  useEffect(() => {
+    try {
+      setClientNameState(localStorage.getItem(CLIENT_NAME_KEY) ?? "");
+    } catch {
+      // Storage can be unavailable (private mode); the field just starts empty.
+    }
+  }, []);
+
+  const setClientName = useCallback((name: string) => {
+    setClientNameState(name);
+    try {
+      localStorage.setItem(CLIENT_NAME_KEY, name);
+    } catch {
+      // Not remembered across refreshes, but still used for this session.
+    }
+  }, []);
 
   // Mirrors `messages` so sendMessage can read the current transcript without
   // doing its fetch inside a setState updater - React may run updaters twice
@@ -90,12 +116,14 @@ export function useChat() {
                 messages: next.map(({ role, content }) => ({ role, content })),
                 conversation_id: threadIdRef.current,
                 knowledge_mode: knowledgeMode,
+                client_name: clientName.trim() || null,
               }),
             });
             if (!res.ok) throw new Error(`Request failed: ${res.status}`);
             const data = await res.json();
             replyContents = data.content ? [data.content] : [];
             toolCalls = data.tool_calls;
+            setMemoryLoaded(Boolean(data.memory_loaded));
           }
         } catch (err) {
           replyContents = [
@@ -122,8 +150,50 @@ export function useChat() {
         setIsAssistantTyping(false);
       })();
     },
-    [useLangGraph, knowledgeMode, appendMessages]
+    [useLangGraph, knowledgeMode, clientName, appendMessages]
   );
+
+  // Ends the conversation: Claude summarises what was established and it is
+  // saved under the client's name, then a fresh conversation starts. The
+  // client's next conversation is answered with that memory.
+  const endConversation = useCallback(async () => {
+    const name = clientName.trim();
+    if (!name) {
+      setStatus("כדי לשמור את השיחה צריך למלא שם לקוח.");
+      return;
+    }
+    if (messagesRef.current.length === 0) {
+      setStatus("אין עדיין מה לשמור.");
+      return;
+    }
+    setIsEnding(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/conversation/end", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: threadIdRef.current,
+          client_name: name,
+          messages: messagesRef.current.map(({ role, content }) => ({ role, content })),
+        }),
+      });
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      messagesRef.current = [];
+      setMessages([]);
+      threadIdRef.current = crypto.randomUUID();
+      previousAuditLogRef.current = "";
+      setMemoryLoaded(null);
+      setStatus(`השיחה נשמרה. השיחה הבאה עם ${name} תיפתח ממה שהתברר בה.`);
+    } catch (err) {
+      setStatus(`שמירת השיחה נכשלה: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setIsEnding(false);
+    }
+  }, [clientName]);
 
   return {
     messages,
@@ -133,5 +203,11 @@ export function useChat() {
     setUseLangGraph,
     knowledgeMode,
     setKnowledgeMode,
+    clientName,
+    setClientName,
+    memoryLoaded,
+    status,
+    isEnding,
+    endConversation,
   };
 }

@@ -17,6 +17,7 @@ def save_turn(
     stop_reason: Optional[str] = None,
     knowledge_mode: str = "none",
     tool_calls: Optional[list] = None,
+    client_name: Optional[str] = None,
 ) -> None:
     # Persistence is best-effort: a missing Supabase config or a failed write
     # must never break the chat itself, so this only logs.
@@ -43,6 +44,13 @@ def save_turn(
         client.table(CONVERSATIONS_TABLE).upsert(
             {"id": conversation_id}, on_conflict="id", ignore_duplicates=True
         ).execute()
+        if client_name:
+            # Its own write: the column comes from supabase/client_memory.sql,
+            # and a missing column must not stop the messages being saved.
+            try:
+                client.table(CONVERSATIONS_TABLE).update({"client_name": client_name}).eq("id", conversation_id).execute()
+            except Exception:
+                logger.exception("Failed to set client_name on conversation %s", conversation_id)
         try:
             client.table(MESSAGES_TABLE).insert([user_row, {**assistant_row, **tool_fields}]).execute()
         except Exception:

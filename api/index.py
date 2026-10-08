@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .chat_langgraph import get_last_assistant_message, get_new_assistant_messages, run_chat_turn
 from .conversation_store import save_turn
 from .engine import generate_reply
+from .memory import format_memory_for_prompt, load_latest_memory, save_memory, summarize_conversation
 from .system_prompt import get_system_prompt_record, update_system_prompt
 
 app = FastAPI()
@@ -126,6 +127,8 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     conversation_id: str | None = None
     knowledge_mode: Literal["none", "search", "full"] = "none"
+    # Who the client is, so their earlier conversations' memory can be loaded.
+    client_name: str | None = None
 
 
 @app.post("/api/chat")
@@ -139,10 +142,13 @@ def chat(request: ChatRequest):
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
+        client_name = (request.client_name or "").strip()
+        memory = load_latest_memory(client_name) if client_name else None
         reply = generate_reply(
             client,
             [{"role": m.role, "content": m.content} for m in request.messages],
             request.knowledge_mode,
+            system_suffix=format_memory_for_prompt(memory) if memory else None,
         )
 
         if request.conversation_id and request.messages:
@@ -154,14 +160,48 @@ def chat(request: ChatRequest):
                 stop_reason=reply["stop_reason"],
                 knowledge_mode=request.knowledge_mode,
                 tool_calls=reply["tool_calls"],
+                client_name=client_name or None,
             )
 
-        return {"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]}
+        return {
+            "role": "assistant",
+            "content": reply["content"],
+            "tool_calls": reply["tool_calls"],
+            "memory_loaded": memory is not None,
+        }
     except Exception as exc:
         return {
             "role": "assistant",
             "content": f"Failed to reach Claude: {exc}",
         }
+
+
+class EndConversationRequest(BaseModel):
+    conversation_id: str
+    client_name: str
+    messages: list[ChatMessage]
+
+
+@app.post("/api/conversation/end")
+def end_conversation(request: EndConversationRequest):
+    # Summarises what was established (on top of the client's earlier memory)
+    # and saves it, so the client's next conversation can start from it.
+    client_name = request.client_name.strip()
+    if not client_name:
+        return {"error": "A client name is needed to save memory."}
+    if not request.messages:
+        return {"error": "The conversation is empty - nothing to save."}
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        previous = load_latest_memory(client_name)
+        memory = summarize_conversation(
+            client, [{"role": m.role, "content": m.content} for m in request.messages], previous
+        )
+        save_memory(client_name, request.conversation_id, memory)
+        return {"memory": memory.model_dump()}
+    except Exception as exc:
+        logger.exception("end_conversation failed for client %r", client_name)
+        return {"error": f"Failed to save memory: {exc}"}
 
 
 class SystemPromptUpdateRequest(BaseModel):

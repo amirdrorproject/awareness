@@ -14,6 +14,12 @@ export default function ChatWindow() {
     setUseLangGraph,
     knowledgeMode,
     setKnowledgeMode,
+    clientName,
+    setClientName,
+    memoryLoaded,
+    status,
+    isEnding,
+    endConversation,
   } = useChat();
 
   return (
@@ -46,6 +52,35 @@ export default function ChatWindow() {
             Use LangGraph (experimental)
           </label>
         </div>
+      </div>
+      <div
+        dir="rtl"
+        className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-4 py-2 text-xs text-gray-600"
+      >
+        <label className="flex items-center gap-1.5">
+          לקוח
+          <input
+            type="text"
+            value={clientName}
+            onChange={(e) => setClientName(e.target.value)}
+            disabled={useLangGraph}
+            placeholder="שם, למשל יואב"
+            className="w-32 rounded border border-gray-300 px-2 py-0.5"
+          />
+        </label>
+        {memoryLoaded && (
+          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-blue-700">
+            עם זיכרון משיחות קודמות
+          </span>
+        )}
+        <button
+          onClick={endConversation}
+          disabled={useLangGraph || isEnding || messages.length === 0}
+          className="ms-auto rounded-full border border-gray-300 px-3 py-0.5 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isEnding ? "שומר..." : "סיים שיחה ושמור"}
+        </button>
+        {status && <div className="w-full text-gray-500">{status}</div>}
       </div>
       <MessageList messages={messages} isAssistantTyping={isAssistantTyping} />
       <MessageInput onSend={sendMessage} />
