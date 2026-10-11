@@ -15,6 +15,7 @@ from .conversation_store import save_turn
 from .engine import generate_reply
 from .memory import format_memory_for_prompt, load_latest_memory, save_memory, summarize_conversation
 from .prompts import PROMPTS, get_prompt_record, list_versions, save_version
+from .turn_analysis import analyze_turn, save_analysis
 
 app = FastAPI()
 
@@ -176,8 +177,9 @@ def chat(request: ChatRequest):
             )
         return {"role": "assistant", "content": content, "trace": trace}
 
+    message_id = None
     if request.conversation_id and request.messages:
-        save_turn(
+        message_id = save_turn(
             request.conversation_id,
             user_message=request.messages[-1].content,
             assistant_message=reply["content"],
@@ -195,7 +197,33 @@ def chat(request: ChatRequest):
         "tool_calls": reply["tool_calls"],
         "memory_loaded": memory is not None,
         "trace": reply["trace"],
+        # Lets the chat attach the turn analysis to this saved reply.
+        "message_id": message_id,
     }
+
+
+class TurnAnalysisRequest(BaseModel):
+    # The conversation up to and including the client message being answered.
+    messages: list[ChatMessage]
+    reply: str
+    message_id: str | None = None
+
+
+@app.post("/api/turn-analysis")
+def turn_analysis(request: TurnAnalysisRequest):
+    # Called by the chat once a reply is on screen: an observer's reading of the
+    # turn (understanding / focus / rationale) for the run-details panel.
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        analysis = analyze_turn(
+            client, [{"role": m.role, "content": m.content} for m in request.messages], request.reply
+        )
+    except Exception as exc:
+        logger.exception("turn analysis failed")
+        return {"error": f"Failed to analyse the turn: {exc}"}
+    if request.message_id:
+        save_analysis(request.message_id, analysis)
+    return {"analysis": analysis.model_dump()}
 
 
 class EndConversationRequest(BaseModel):

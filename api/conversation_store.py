@@ -19,13 +19,15 @@ def save_turn(
     tool_calls: Optional[list] = None,
     client_name: Optional[str] = None,
     trace: Optional[dict] = None,
-) -> None:
+) -> Optional[str]:
+    """Saves the user message and the reply; returns the reply row's id (so a
+    later step can add to its trace), or None if nothing was saved."""
     # Persistence is best-effort: a missing Supabase config or a failed write
     # must never break the chat itself, so this only logs.
     client = get_supabase_client()
     if client is None:
         logger.info("Supabase not configured - conversation %s not saved.", conversation_id)
-        return
+        return None
 
     user_row = {"conversation_id": conversation_id, "role": "user", "content": user_message}
     assistant_row = {
@@ -62,11 +64,12 @@ def save_turn(
                 logger.exception("Failed to set client_name on conversation %s", conversation_id)
         for i, row in enumerate(attempts):
             try:
-                client.table(MESSAGES_TABLE).insert([user_row, row]).execute()
-                break
+                saved = client.table(MESSAGES_TABLE).insert([user_row, row]).execute().data or []
+                return next((r["id"] for r in saved if r.get("role") == "assistant"), None)
             except Exception:
                 if i == len(attempts) - 1:
                     raise
                 logger.exception("Saving turn failed - retrying with fewer columns (run the supabase/*.sql files)")
     except Exception:
         logger.exception("Failed to save turn for conversation %s", conversation_id)
+    return None

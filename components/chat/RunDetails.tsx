@@ -1,9 +1,11 @@
-import type { RunTrace, ToolCall } from "@/lib/chat/types";
+import type { AnalysisState, RunTrace, ToolCall, TurnAnalysis } from "@/lib/chat/types";
 
-// "Run details" under a reply: how it came about, layer by layer - the input
-// Claude got, knowledge and tools, the model, and performance - plus the
-// summary of Claude's thinking. Collapsed by default so the conversation
-// still reads as a conversation.
+// "Run details" under a reply. On top, the turn in the four parts Amir reviews:
+// understanding, focus and rationale (an observer's reading of the
+// conversation - not Claude's own reasoning) and the reply itself. Below, how
+// it came about technically: Claude's thinking summary, the input, knowledge
+// and tools, the model, and performance.
+// Collapsed by default so the conversation still reads as a conversation.
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
@@ -43,7 +45,61 @@ function ToolCallLine({ call }: { call: ToolCall }) {
   );
 }
 
-export default function RunDetails({ trace, toolCalls }: { trace: RunTrace; toolCalls?: ToolCall[] }) {
+const NOT_INFERABLE = "לא ניתן להסיק";
+
+function AnalysisField({ label, text }: { label: string; text: string }) {
+  const missing = text.trim() === NOT_INFERABLE;
+  return (
+    <div>
+      <div className="font-semibold text-gray-800">{label}</div>
+      <p className={`whitespace-pre-wrap ${missing ? "text-gray-400" : "text-gray-800"}`}>{text}</p>
+    </div>
+  );
+}
+
+function TurnAnalysisBlock({
+  analysis,
+  state,
+  reply,
+}: {
+  analysis?: TurnAnalysis;
+  state?: AnalysisState;
+  reply: string;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-white/70 p-2.5">
+      <p className="text-gray-500">
+        ניתוח של צופה: פירוש של מה שעולה מהשיחה ומהתשובה, לא ההסבר של הסוכן עצמו. ההסבר של Claude נמצא ב&quot;סיכום החשיבה&quot; למטה.
+      </p>
+      {state === "done" && analysis ? (
+        <>
+          <AnalysisField label="הבנה" text={analysis.understanding} />
+          <AnalysisField label="מוקד" text={analysis.focus} />
+          <AnalysisField label="היגיון הבחירה" text={analysis.rationale} />
+        </>
+      ) : (
+        <p className="text-gray-500">
+          {state === "pending" ? "מנתח את התור..." : "הניתוח נכשל. סיכום החשיבה של Claude מופיע למטה."}
+        </p>
+      )}
+      <AnalysisField label="תגובה" text={reply} />
+    </div>
+  );
+}
+
+export default function RunDetails({
+  trace,
+  toolCalls,
+  reply,
+  analysis,
+  analysisState,
+}: {
+  trace: RunTrace;
+  toolCalls?: ToolCall[];
+  reply: string;
+  analysis?: TurnAnalysis;
+  analysisState?: AnalysisState;
+}) {
   const calls = toolCalls ?? [];
   const usage = trace.usage;
   const headline = trace.error
@@ -66,7 +122,9 @@ export default function RunDetails({ trace, toolCalls }: { trace: RunTrace; tool
           </Row>
         ) : (
           <>
-            <Row label="חשיבה">
+            <TurnAnalysisBlock analysis={analysis} state={analysisState} reply={reply} />
+
+            <Row label="סיכום החשיבה של Claude">
               {trace.thinking && trace.thinking.length > 0 ? (
                 trace.thinking.map((text, i) => (
                   <p key={i} className="whitespace-pre-wrap">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KnowledgeMode, Message, MessageSource, RunTrace, ToolCall } from "./types";
+import type { KnowledgeMode, Message, MessageSource, RunTrace, ToolCall, TurnAnalysis } from "./types";
 
 const CLIENT_NAME_KEY = "awareness.clientName";
 
@@ -47,6 +47,37 @@ export function useChat() {
 
   const previousAuditLogRef = useRef("");
 
+  const updateMessage = useCallback((id: string, changes: Partial<Message>) => {
+    messagesRef.current = messagesRef.current.map((m) => (m.id === id ? { ...m, ...changes } : m));
+    setMessages(messagesRef.current);
+  }, []);
+
+  // Once a reply is on screen, an observer reads the turn (understanding /
+  // focus / rationale). Runs in the background, so the reply never waits on it.
+  const analyzeReply = useCallback(
+    async (reply: Message, history: Message[], messageDbId: string | null) => {
+      updateMessage(reply.id, { analysisState: "pending" });
+      try {
+        const res = await fetch("/api/turn-analysis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: history.map(({ role, content }) => ({ role, content })),
+            reply: reply.content,
+            message_id: messageDbId,
+          }),
+        });
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        updateMessage(reply.id, { analysis: data.analysis as TurnAnalysis, analysisState: "done" });
+      } catch {
+        updateMessage(reply.id, { analysisState: "error" });
+      }
+    },
+    [updateMessage]
+  );
+
   const appendMessages = useCallback((added: Message[]) => {
     messagesRef.current = [...messagesRef.current, ...added];
     setMessages(messagesRef.current);
@@ -76,6 +107,7 @@ export function useChat() {
         let internalAuditLog: string | undefined;
         let toolCalls: ToolCall[] | undefined;
         let trace: RunTrace | undefined;
+        let messageDbId: string | null = null;
 
         try {
           if (useLangGraph) {
@@ -125,6 +157,7 @@ export function useChat() {
             replyContents = data.content ? [data.content] : [];
             toolCalls = data.tool_calls;
             trace = data.trace;
+            messageDbId = data.message_id ?? null;
             setMemoryLoaded(Boolean(data.memory_loaded));
           }
         } catch (err) {
@@ -149,11 +182,13 @@ export function useChat() {
             trace: index === replyContents.length - 1 ? trace : undefined,
           }));
           appendMessages(replies);
+          const last = replies[replies.length - 1];
+          if (last.trace && !last.trace.error) analyzeReply(last, next, messageDbId);
         }
         setIsAssistantTyping(false);
       })();
     },
-    [useLangGraph, knowledgeMode, clientName, appendMessages]
+    [useLangGraph, knowledgeMode, clientName, appendMessages, analyzeReply]
   );
 
   // Ends the conversation: Claude summarises what was established and it is

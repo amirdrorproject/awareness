@@ -35,6 +35,16 @@ export interface RunTrace {
   error?: string;
 }
 
+// An observer's reading of the turn, in the parts Amir reviews (the reply
+// itself is the fourth). Filled in after the reply is shown.
+export interface TurnAnalysis {
+  understanding: string;
+  focus: string;
+  rationale: string;
+}
+
+export type AnalysisState = "pending" | "done" | "error";
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -44,4 +54,6 @@ export interface Message {
   internalAuditLog?: string;
   toolCalls?: ToolCall[];
   trace?: RunTrace;
+  analysis?: TurnAnalysis;
+  analysisState?: AnalysisState;
 }

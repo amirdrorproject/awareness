@@ -25,7 +25,15 @@ export default function MessageBubble({ message }: { message: Message }) {
           </div>
         )}
         {/* Shown to whoever runs the simulation, not part of Claude's reply. */}
-        {message.trace && <RunDetails trace={message.trace} toolCalls={message.toolCalls} />}
+        {message.trace && (
+          <RunDetails
+            trace={message.trace}
+            toolCalls={message.toolCalls}
+            reply={message.content}
+            analysis={message.analysis}
+            analysisState={message.analysisState}
+          />
+        )}
       </div>
     </div>
   );
