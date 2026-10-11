@@ -11,7 +11,8 @@ export function useChat() {
   const [useLangGraph, setUseLangGraph] = useState(false);
   const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("full");
   // Whether the success-analysis module is added to the engine prompt.
-  const [successModule, setSuccessModule] = useState(false);
+  // On by default on this branch, which exists to try the module out.
+  const [successModule, setSuccessModule] = useState(true);
   // Who the client is: conversations under the same name share memory.
   // Remembered in this browser so a simulation can be resumed after a refresh.
   const [clientName, setClientNameState] = useState("");
