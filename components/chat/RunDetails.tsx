@@ -107,6 +107,7 @@ export default function RunDetails({
     : [
         trace.latency_s !== undefined && `${trace.latency_s} שנ'`,
         calls.length > 0 ? `${calls.length} כלים` : "בלי כלים",
+        trace.success_module && "עם מודול הצלחה",
         trace.memory_loaded && "עם זיכרון",
       ]
         .filter(Boolean)
@@ -142,6 +143,14 @@ export default function RunDetails({
                 {trace.prompt?.source === "admin" && trace.prompt.created_at
                   ? `גרסה מ-${formatDate(trace.prompt.created_at)}${trace.prompt.note ? ` (${trace.prompt.note})` : ""}`
                   : "הגרסה שבקוד"}
+              </div>
+              <div>
+                מודול ניתוח הצלחה:{" "}
+                {!trace.success_module
+                  ? "כבוי"
+                  : trace.success_module !== true && trace.success_module.source === "admin" && trace.success_module.created_at
+                    ? `גרסה מ-${formatDate(trace.success_module.created_at)}${trace.success_module.note ? ` (${trace.success_module.note})` : ""}`
+                    : "הגרסה שבקוד"}
               </div>
               <div>היסטוריה: {trace.history_messages} הודעות</div>
               {trace.system_suffix ? (

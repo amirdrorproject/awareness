@@ -20,6 +20,7 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 # name -> (file fallback, label shown in /admin)
 PROMPTS = {
     "engine": ("engine.md", "פרומפט המנוע"),
+    "module_success": ("module_success.md", "מודול ניתוח הצלחה"),
     "memory_summary": ("memory_summary.md", "מה נשמר בסוף שיחה"),
     "memory_context": ("memory_context.md", "איך משתמשים בזיכרון בשיחה הבאה"),
 }

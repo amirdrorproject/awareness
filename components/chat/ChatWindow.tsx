@@ -14,6 +14,8 @@ export default function ChatWindow() {
     setUseLangGraph,
     knowledgeMode,
     setKnowledgeMode,
+    successModule,
+    setSuccessModule,
     clientName,
     setClientName,
     memoryLoaded,
@@ -42,6 +44,15 @@ export default function ChatWindow() {
               <option value="full">Full bank</option>
               <option value="none">None</option>
             </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={successModule}
+              disabled={useLangGraph}
+              onChange={(e) => setSuccessModule(e.target.checked)}
+            />
+            Success analysis module
           </label>
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
             <input

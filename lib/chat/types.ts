@@ -18,6 +18,9 @@ export interface RunTrace {
   effort?: string;
   stop_reason?: string;
   prompt?: { source: "admin" | "file"; created_at: string | null; note: string | null };
+  // The success-analysis module's version, when it was part of the prompt.
+  // A failed turn only knows that it was on.
+  success_module?: { source: "admin" | "file"; created_at: string | null; note: string | null } | true | null;
   system_suffix?: string | null;
   memory_loaded?: boolean;
   knowledge_mode?: string;

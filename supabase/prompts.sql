@@ -7,7 +7,7 @@ create extension if not exists pgcrypto;
 
 create table if not exists prompt_versions (
   id uuid primary key default gen_random_uuid(),
-  -- engine | memory_summary | memory_context
+  -- engine | module_success | memory_summary | memory_context
   name text not null,
   content text not null,
   note text,

@@ -132,6 +132,9 @@ class ChatRequest(BaseModel):
     knowledge_mode: Literal["none", "search", "full"] = "none"
     # Who the client is, so their earlier conversations' memory can be loaded.
     client_name: str | None = None
+    # Adds the success-analysis module to the engine prompt, so the same
+    # conversation can be compared with and without it.
+    success_module: bool = False
 
 
 @app.post("/api/chat")
@@ -153,6 +156,7 @@ def chat(request: ChatRequest):
             [{"role": m.role, "content": m.content} for m in request.messages],
             request.knowledge_mode,
             system_suffix=format_memory_for_prompt(memory) if memory else None,
+            module=get_prompt_record("module_success") if request.success_module else None,
         )
         reply["trace"]["memory_loaded"] = memory is not None
     except Exception as exc:
@@ -162,6 +166,7 @@ def chat(request: ChatRequest):
         trace = {
             "error": f"{type(exc).__name__}: {exc}",
             "knowledge_mode": request.knowledge_mode,
+            "success_module": request.success_module or None,
             "latency_s": round(time.monotonic() - started, 2),
         }
         if request.conversation_id and request.messages:

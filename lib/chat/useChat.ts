@@ -10,6 +10,8 @@ export function useChat() {
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [useLangGraph, setUseLangGraph] = useState(false);
   const [knowledgeMode, setKnowledgeMode] = useState<KnowledgeMode>("full");
+  // Whether the success-analysis module is added to the engine prompt.
+  const [successModule, setSuccessModule] = useState(false);
   // Who the client is: conversations under the same name share memory.
   // Remembered in this browser so a simulation can be resumed after a refresh.
   const [clientName, setClientNameState] = useState("");
@@ -150,6 +152,7 @@ export function useChat() {
                 conversation_id: threadIdRef.current,
                 knowledge_mode: knowledgeMode,
                 client_name: clientName.trim() || null,
+                success_module: successModule,
               }),
             });
             if (!res.ok) throw new Error(`Request failed: ${res.status}`);
@@ -188,7 +191,7 @@ export function useChat() {
         setIsAssistantTyping(false);
       })();
     },
-    [useLangGraph, knowledgeMode, clientName, appendMessages, analyzeReply]
+    [useLangGraph, knowledgeMode, successModule, clientName, appendMessages, analyzeReply]
   );
 
   // Ends the conversation: Claude summarises what was established and it is
@@ -241,6 +244,8 @@ export function useChat() {
     setUseLangGraph,
     knowledgeMode,
     setKnowledgeMode,
+    successModule,
+    setSuccessModule,
     clientName,
     setClientName,
     memoryLoaded,

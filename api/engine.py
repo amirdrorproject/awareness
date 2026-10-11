@@ -52,6 +52,7 @@ def generate_reply(
     messages: list[dict],
     knowledge_mode: str = "none",
     system_suffix: str | None = None,
+    module: dict | None = None,
 ) -> dict:
     """Runs one agent turn: the engine prompt + conversation, plus whichever
     knowledge tool the mode allows. Returns the reply text, every tool call,
@@ -59,11 +60,15 @@ def generate_reply(
     summaries, tokens, latency, cost) for the run-details panel.
 
     `system_suffix` is appended to the engine prompt - the client's memory in
-    the chat, and prompt variants in the test scripts."""
+    the chat, and prompt variants in the test scripts. `module` is the prompt
+    record of an optional module (success analysis); its text goes right after
+    the engine prompt."""
     started = time.monotonic()
     tools = TOOLS_BY_MODE[knowledge_mode]
     prompt_record = get_prompt_record("engine")
-    system = prompt_record["content"] + (f"\n\n{system_suffix}" if system_suffix else "")
+    system = "\n\n".join(
+        part for part in (prompt_record["content"], module and module["content"], system_suffix) if part
+    )
     messages = list(messages)
     # How many conversation messages Claude was given (this one included),
     # before any tool round adds to the list.
@@ -136,6 +141,9 @@ def generate_reply(
             "created_at": prompt_record["created_at"],
             "note": prompt_record["note"],
         },
+        # Which version of the success-analysis module was in the prompt, if any.
+        "success_module": module
+        and {"source": module["source"], "created_at": module["created_at"], "note": module["note"]},
         "system_suffix": system_suffix,
         "knowledge_mode": knowledge_mode,
         "history_messages": history_messages,
