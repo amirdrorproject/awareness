@@ -25,8 +25,13 @@ export default function MessageList({
           עדיין אין הודעות. כתבו משהו כדי להתחיל.
         </p>
       ) : (
-        messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+        messages.map((message, index) => (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            // The client's answer to this reply, to judge whether it moved things on.
+            nextClientMessage={messages.slice(index + 1).find((m) => m.role === "user")?.content}
+          />
         ))
       )}
       {isAssistantTyping && <TypingIndicator />}

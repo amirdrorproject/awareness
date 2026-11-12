@@ -13,6 +13,9 @@ export function useChat() {
   // Whether the success-analysis module is added to the engine prompt.
   // On by default on this branch, which exists to try the module out.
   const [successModule, setSuccessModule] = useState(true);
+  // Whether the conversation-states module is added, with its per-turn log.
+  // On by default on this branch, which exists to try the log out.
+  const [statesModule, setStatesModule] = useState(true);
   // Who the client is: conversations under the same name share memory.
   // Remembered in this browser so a simulation can be resumed after a refresh.
   const [clientName, setClientNameState] = useState("");
@@ -149,11 +152,17 @@ export function useChat() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                messages: next.map(({ role, content }) => ({ role, content })),
+                // A reply's log goes back with it, so the agent sees its own
+                // earlier logs (and the hypotheses it held back).
+                messages: next.map(({ role, content, trace }) => ({
+                  role,
+                  content: trace?.turn_log ? `<log>\n${trace.turn_log.raw}\n</log>\n\n${content}` : content,
+                })),
                 conversation_id: threadIdRef.current,
                 knowledge_mode: knowledgeMode,
                 client_name: clientName.trim() || null,
                 success_module: successModule,
+                states_module: statesModule,
               }),
             });
             if (!res.ok) throw new Error(`Request failed: ${res.status}`);
@@ -192,7 +201,7 @@ export function useChat() {
         setIsAssistantTyping(false);
       })();
     },
-    [useLangGraph, knowledgeMode, successModule, clientName, appendMessages, analyzeReply]
+    [useLangGraph, knowledgeMode, successModule, statesModule, clientName, appendMessages, analyzeReply]
   );
 
   // Ends the conversation: Claude summarises what was established and it is
@@ -247,6 +256,8 @@ export function useChat() {
     setKnowledgeMode,
     successModule,
     setSuccessModule,
+    statesModule,
+    setStatesModule,
     clientName,
     setClientName,
     memoryLoaded,

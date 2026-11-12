@@ -1,4 +1,4 @@
-import type { AnalysisState, RunTrace, ToolCall, TurnAnalysis } from "@/lib/chat/types";
+import type { AnalysisState, ReplyChecks, RunTrace, ToolCall, TurnAnalysis, TurnLog } from "@/lib/chat/types";
 
 // "Run details" under a reply. On top, the turn in the four parts Amir reviews:
 // understanding, focus and rationale (an observer's reading of the
@@ -87,18 +87,84 @@ function TurnAnalysisBlock({
   );
 }
 
+// The progress sign of each state, from Amir's strategy (prompts/module_states.md),
+// shown next to the client's next message so the two can be compared.
+const PROGRESS_SIGNS: Record<string, string> = {
+  א: "נוצר מוקד ראשוני או שהלקוח מוסיף מידע בעל משמעות מרצונו.",
+  ב: "הסיפור הגיע לנקודה שבה אפשר להבין את עניינו המרכזי או לברר עם הלקוח מה חשוב לו.",
+  ג: "הלקוח מצליח לבחור עניין שחשוב לו להתחיל ממנו, גם אם יתר המורכבות נותרת פתוחה.",
+  ד: "מתגבש מוקד שהלקוח מאשר, מתקן או מנסח בעצמו.",
+  ה: "הלקוח מפתח הבנה, מזהה אפשרות, מחדד החלטה או מגדיר פעולה בעלת משמעות עבורו.",
+};
+
+function TurnLogBlock({
+  log,
+  checks,
+  nextClientMessage,
+}: {
+  log?: TurnLog | null;
+  checks?: ReplyChecks;
+  nextClientMessage?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-white/70 p-2.5">
+      <p className="text-gray-500">לוג הסוכן: מה הסוכן עצמו כתב לפני התגובה, ומה התגובה עשתה בפועל.</p>
+      {log ? (
+        <>
+          <AnalysisField label="מצב השיחה" text={log.state ?? "—"} />
+          <AnalysisField label="מאפיינים נצפים" text={log.observed ?? "—"} />
+          <AnalysisField label="משימה תקשורתית" text={log.task ?? "—"} />
+          <AnalysisField label="תנועה שנבחרה" text={log.move ?? "—"} />
+          <AnalysisField label="ממה להימנע" text={log.avoid ?? "—"} />
+          <AnalysisField label="השערה שהוחזקה ולא הוצגה" text={log.held_hypothesis ?? "—"} />
+        </>
+      ) : (
+        <p className="text-gray-500">לא נכתב לוג לתור הזה.</p>
+      )}
+      {checks && (
+        <div>
+          <div className="font-semibold text-gray-800">בפועל</div>
+          <p>
+            {checks.words} מילים · {checks.questions} סימני שאלה
+          </p>
+          {checks.flags.map((flag) => (
+            <p key={flag} className="text-amber-700">
+              ⚠ {flag}
+            </p>
+          ))}
+        </div>
+      )}
+      {log && log.states.length > 0 && (
+        <div>
+          <div className="font-semibold text-gray-800">התקדמות</div>
+          {log.states.map((letter) => (
+            <p key={letter} className="text-gray-600">
+              סימן להתקדמות במצב {letter}׳: {PROGRESS_SIGNS[letter]}
+            </p>
+          ))}
+          <p className="whitespace-pre-wrap text-gray-800">
+            {nextClientMessage ? `תגובת הלקוח: ${nextClientMessage}` : "הלקוח עוד לא הגיב."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RunDetails({
   trace,
   toolCalls,
   reply,
   analysis,
   analysisState,
+  nextClientMessage,
 }: {
   trace: RunTrace;
   toolCalls?: ToolCall[];
   reply: string;
   analysis?: TurnAnalysis;
   analysisState?: AnalysisState;
+  nextClientMessage?: string;
 }) {
   const calls = toolCalls ?? [];
   const usage = trace.usage;
@@ -108,6 +174,8 @@ export default function RunDetails({
         trace.latency_s !== undefined && `${trace.latency_s} שנ'`,
         calls.length > 0 ? `${calls.length} כלים` : "בלי כלים",
         trace.success_module && "עם מודול הצלחה",
+        trace.turn_log?.states.length && `מצב ${trace.turn_log.states.map((l) => `${l}׳`).join("+")}`,
+        trace.checks && trace.checks.flags.length > 0 && `⚠ ${trace.checks.flags.length}`,
         trace.memory_loaded && "עם זיכרון",
       ]
         .filter(Boolean)
@@ -123,6 +191,10 @@ export default function RunDetails({
           </Row>
         ) : (
           <>
+            {trace.states_module && (
+              <TurnLogBlock log={trace.turn_log} checks={trace.checks} nextClientMessage={nextClientMessage} />
+            )}
+
             <TurnAnalysisBlock analysis={analysis} state={analysisState} reply={reply} />
 
             <Row label="סיכום החשיבה של Claude">
@@ -150,6 +222,14 @@ export default function RunDetails({
                   ? "כבוי"
                   : trace.success_module !== true && trace.success_module.source === "admin" && trace.success_module.created_at
                     ? `גרסה מ-${formatDate(trace.success_module.created_at)}${trace.success_module.note ? ` (${trace.success_module.note})` : ""}`
+                    : "הגרסה שבקוד"}
+              </div>
+              <div>
+                מודול מצבי שיחה ולוג:{" "}
+                {!trace.states_module
+                  ? "כבוי"
+                  : trace.states_module !== true && trace.states_module.source === "admin" && trace.states_module.created_at
+                    ? `גרסה מ-${formatDate(trace.states_module.created_at)}${trace.states_module.note ? ` (${trace.states_module.note})` : ""}`
                     : "הגרסה שבקוד"}
               </div>
               <div>היסטוריה: {trace.history_messages} הודעות</div>

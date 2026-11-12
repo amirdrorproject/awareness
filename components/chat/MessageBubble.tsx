@@ -2,7 +2,13 @@ import ReactMarkdown from "react-markdown";
 import type { Message } from "@/lib/chat/types";
 import RunDetails from "./RunDetails";
 
-export default function MessageBubble({ message }: { message: Message }) {
+export default function MessageBubble({
+  message,
+  nextClientMessage,
+}: {
+  message: Message;
+  nextClientMessage?: string;
+}) {
   const isUser = message.role === "user";
 
   return (
@@ -32,6 +38,7 @@ export default function MessageBubble({ message }: { message: Message }) {
             reply={message.content}
             analysis={message.analysis}
             analysisState={message.analysisState}
+            nextClientMessage={nextClientMessage}
           />
         )}
       </div>

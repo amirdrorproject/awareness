@@ -21,6 +21,10 @@ export interface RunTrace {
   // The success-analysis module's version, when it was part of the prompt.
   // A failed turn only knows that it was on.
   success_module?: { source: "admin" | "file"; created_at: string | null; note: string | null } | true | null;
+  // Same for the conversation-states module, under which the agent logs each turn.
+  states_module?: { source: "admin" | "file"; created_at: string | null; note: string | null } | true | null;
+  turn_log?: TurnLog | null;
+  checks?: ReplyChecks;
   system_suffix?: string | null;
   memory_loaded?: boolean;
   knowledge_mode?: string;
@@ -36,6 +40,29 @@ export interface RunTrace {
   cost_usd?: number | null;
   latency_s?: number;
   error?: string;
+}
+
+// The agent's own log, written before its reply (api/turn_log.py). Any field
+// can be missing if the agent left it out.
+export interface TurnLog {
+  state?: string;
+  observed?: string;
+  task?: string;
+  move?: string;
+  avoid?: string;
+  held_hypothesis?: string;
+  // State letters found in `state` (א-ה); more than one means mixed.
+  states: string[];
+  // The move from the fixed list that `move` starts with, if any.
+  move_type: string | null;
+  raw: string;
+}
+
+// What the reply actually did, checked in code.
+export interface ReplyChecks {
+  questions: number;
+  words: number;
+  flags: string[];
 }
 
 // An observer's reading of the turn, in the parts Amir reviews (the reply

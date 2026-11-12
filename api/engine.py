@@ -5,6 +5,7 @@ import anthropic
 
 from .knowledge import TOOLS_BY_MODE, run_tool
 from .prompts import get_prompt, get_prompt_record
+from .turn_log import check_reply, extract_log
 
 logger = logging.getLogger("api.engine")
 
@@ -53,6 +54,7 @@ def generate_reply(
     knowledge_mode: str = "none",
     system_suffix: str | None = None,
     module: dict | None = None,
+    states_module: dict | None = None,
 ) -> dict:
     """Runs one agent turn: the engine prompt + conversation, plus whichever
     knowledge tool the mode allows. Returns the reply text, every tool call,
@@ -62,12 +64,21 @@ def generate_reply(
     `system_suffix` is appended to the engine prompt - the client's memory in
     the chat, and prompt variants in the test scripts. `module` is the prompt
     record of an optional module (success analysis); its text goes right after
-    the engine prompt."""
+    the engine prompt. `states_module` is the conversation-states module, which
+    has the agent open its reply with a <log> block; the log is cut out of the
+    reply and returned in the trace, with simple checks on the reply."""
     started = time.monotonic()
     tools = TOOLS_BY_MODE[knowledge_mode]
     prompt_record = get_prompt_record("engine")
     system = "\n\n".join(
-        part for part in (prompt_record["content"], module and module["content"], system_suffix) if part
+        part
+        for part in (
+            prompt_record["content"],
+            module and module["content"],
+            states_module and states_module["content"],
+            system_suffix,
+        )
+        if part
     )
     messages = list(messages)
     # How many conversation messages Claude was given (this one included),
@@ -75,6 +86,9 @@ def generate_reply(
     history_messages = len(messages)
     tool_calls = []
     thinking = []
+    # Text from every round: the log may come before a tool call, in an
+    # earlier round than the reply itself.
+    texts = []
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     rounds = 0
 
@@ -106,6 +120,7 @@ def generate_reply(
         for key in usage:
             usage[key] += getattr(response.usage, key, None) or 0
         thinking += [block.thinking for block in response.content if block.type == "thinking" and block.thinking]
+        texts.append("".join(block.text for block in response.content if block.type == "text"))
         if response.stop_reason != "tool_use":
             break
 
@@ -127,10 +142,11 @@ def generate_reply(
                 tool_calls.append({"name": block.name, "input": block.input, "error": str(exc)})
         messages.append({"role": "user", "content": tool_results})
 
+    turn_log, _ = extract_log("\n".join(texts))
     if response.stop_reason == "refusal":
         content = "(Claude declined to answer this message.)"
     else:
-        content = "".join(block.text for block in response.content if block.type == "text")
+        _, content = extract_log(texts[-1])
 
     trace = {
         "model": response.model,
@@ -144,6 +160,10 @@ def generate_reply(
         # Which version of the success-analysis module was in the prompt, if any.
         "success_module": module
         and {"source": module["source"], "created_at": module["created_at"], "note": module["note"]},
+        "states_module": states_module
+        and {"source": states_module["source"], "created_at": states_module["created_at"], "note": states_module["note"]},
+        "turn_log": turn_log,
+        "checks": check_reply(content, turn_log, log_expected=states_module is not None),
         "system_suffix": system_suffix,
         "knowledge_mode": knowledge_mode,
         "history_messages": history_messages,

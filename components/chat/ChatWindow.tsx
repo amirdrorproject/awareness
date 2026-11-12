@@ -16,6 +16,8 @@ export default function ChatWindow() {
     setKnowledgeMode,
     successModule,
     setSuccessModule,
+    statesModule,
+    setStatesModule,
     clientName,
     setClientName,
     memoryLoaded,
@@ -53,6 +55,15 @@ export default function ChatWindow() {
               onChange={(e) => setSuccessModule(e.target.checked)}
             />
             Success analysis module
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={statesModule}
+              disabled={useLangGraph}
+              onChange={(e) => setStatesModule(e.target.checked)}
+            />
+            Conversation states + turn log
           </label>
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
             <input
