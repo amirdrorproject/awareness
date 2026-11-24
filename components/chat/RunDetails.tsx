@@ -162,7 +162,11 @@ function HumanComparisonBlock({
         </>
       ) : (
         <p className="text-gray-500">
-          {state === "error" ? "ההשוואה נכשלה." : "ההשוואה תרוץ כשהצופה יסיים..."}
+          {state === "error"
+            ? "ההשוואה נכשלה."
+            : state === "pending"
+              ? "משווה למה שזיהיתי..."
+              : "ההשוואה תרוץ כשהצופה יסיים..."}
         </p>
       )}
     </div>
