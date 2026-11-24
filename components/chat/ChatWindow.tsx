@@ -18,6 +18,9 @@ export default function ChatWindow() {
     setSuccessModule,
     statesModule,
     setStatesModule,
+    researchObserver,
+    setResearchObserver,
+    saveHumanNote,
     clientName,
     setClientName,
     memoryLoaded,
@@ -68,6 +71,15 @@ export default function ChatWindow() {
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
             <input
               type="checkbox"
+              checked={researchObserver}
+              disabled={useLangGraph}
+              onChange={(e) => setResearchObserver(e.target.checked)}
+            />
+            Research observer (+3 calls per turn)
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <input
+              type="checkbox"
               checked={useLangGraph}
               onChange={(e) => setUseLangGraph(e.target.checked)}
             />
@@ -104,7 +116,7 @@ export default function ChatWindow() {
         </button>
         {status && <div className="w-full text-gray-500">{status}</div>}
       </div>
-      <MessageList messages={messages} isAssistantTyping={isAssistantTyping} />
+      <MessageList messages={messages} isAssistantTyping={isAssistantTyping} onSaveNote={saveHumanNote} />
       <MessageInput onSend={sendMessage} />
     </div>
   );

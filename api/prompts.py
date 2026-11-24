@@ -22,6 +22,8 @@ PROMPTS = {
     "engine": ("engine.md", "פרומפט המנוע"),
     "module_success": ("module_success.md", "מודול ניתוח הצלחה"),
     "module_states": ("module_states.md", "מודול מצבי שיחה ולוג תור"),
+    "observer": ("observer.md", "פרומפט הצופה המחקרי"),
+    "observer_human": ("observer_human.md", "השוואה למה שאמיר זיהה"),
     "memory_summary": ("memory_summary.md", "מה נשמר בסוף שיחה"),
     "memory_context": ("memory_context.md", "איך משתמשים בזיכרון בשיחה הבאה"),
 }

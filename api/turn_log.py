@@ -2,10 +2,12 @@
 
 With the conversation-states module on, the agent opens each reply with a
 short <log> block: the state it identified, what it rests on, the
-communicative task, the move it chose, what to avoid, and a hypothesis it
-holds back. The log is cut out of the reply before the client sees it and
-kept in the run trace, so identification, intent and execution can be
-compared turn by turn. The checks are plain code - no model call.
+communicative task, the move it chose, what to avoid, and its hypothesis on
+the situation, if it has one. The log is cut out of the reply before the
+client sees it and kept in the run trace, so identification, intent and
+execution can be compared turn by turn. The checks are plain code - no model
+call; whether a reply asks more than one question is judged by the research
+observer (api/observer.py), since counting "?" marks miscounted it.
 """
 
 import re
@@ -19,8 +21,12 @@ FIELDS = {
     "משימה": "task",
     "תנועה": "move",
     "הימנעות": "avoid",
+    "השערה על המצב": "hypothesis",
+    # The label before Nov 2026 ("a hypothesis you hold and don't show"),
+    # kept so older logs still read; a new log has only one of the two.
     "השערה מוחזקת": "held_hypothesis",
 }
+REQUIRED = ["state", "observed", "task", "move", "avoid"]
 
 MOVES = [
     "הקשבה",
@@ -63,18 +69,19 @@ def extract_log(text: str) -> tuple[dict | None, str]:
 
 def check_reply(reply: str, log: dict | None, log_expected: bool) -> dict:
     """What the reply actually did, and the simple deviations in it."""
-    questions = reply.count("?")
     words = len(reply.split())
     flags = []
     if log_expected:
         if log is None:
             flags.append("לא נכתב לוג")
         else:
-            missing = [label for label, key in FIELDS.items() if not log.get(key)]
+            labels = {key: label for label, key in FIELDS.items()}
+            missing = [labels[key] for key in REQUIRED if not log.get(key)]
+            # "אין" is a valid hypothesis; only a missing line counts.
+            if not (log.get("hypothesis") or log.get("held_hypothesis")):
+                missing.append(labels["hypothesis"])
             if missing:
                 flags.append(f"חסרים בלוג: {', '.join(missing)}")
             if log.get("move") and not log["move_type"]:
                 flags.append("התנועה אינה מהרשימה")
-    if questions > 1:
-        flags.append(f"{questions} שאלות בתגובה")
-    return {"questions": questions, "words": words, "flags": flags}
+    return {"words": words, "flags": flags}

@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 import anthropic
@@ -23,6 +24,17 @@ PRICES_PER_MTOK = {
     "claude-opus-4-8": (5.00, 25.00, 0.50, 6.25),
     "claude-fable-5-1": (10.00, 50.00, 0.25, 12.50),
 }
+
+
+def get_runtime() -> dict:
+    # Where this turn ran: Vercel sets these on every deployment; locally
+    # there are none.
+    commit = os.environ.get("VERCEL_GIT_COMMIT_SHA")
+    return {
+        "env": os.environ.get("VERCEL_ENV") or "local",
+        "branch": os.environ.get("VERCEL_GIT_COMMIT_REF"),
+        "commit": commit and commit[:7],
+    }
 
 
 def get_engine_prompt() -> str:
@@ -152,6 +164,7 @@ def generate_reply(
         "model": response.model,
         "effort": CLAUDE_EFFORT,
         "stop_reason": response.stop_reason,
+        "runtime": get_runtime(),
         "prompt": {
             "source": prompt_record["source"],
             "created_at": prompt_record["created_at"],

@@ -5,9 +5,11 @@ import RunDetails from "./RunDetails";
 export default function MessageBubble({
   message,
   nextClientMessage,
+  onSaveNote,
 }: {
   message: Message;
   nextClientMessage?: string;
+  onSaveNote: (id: string, text: string | null) => void;
 }) {
   const isUser = message.role === "user";
 
@@ -35,9 +37,9 @@ export default function MessageBubble({
           <RunDetails
             trace={message.trace}
             toolCalls={message.toolCalls}
-            reply={message.content}
-            analysis={message.analysis}
-            analysisState={message.analysisState}
+            observer={message.observer}
+            humanNote={message.humanNote}
+            onSaveNote={(text) => onSaveNote(message.id, text)}
             nextClientMessage={nextClientMessage}
           />
         )}

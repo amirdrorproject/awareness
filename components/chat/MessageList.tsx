@@ -8,9 +8,11 @@ import TypingIndicator from "./TypingIndicator";
 export default function MessageList({
   messages,
   isAssistantTyping = false,
+  onSaveNote,
 }: {
   messages: Message[];
   isAssistantTyping?: boolean;
+  onSaveNote: (id: string, text: string | null) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -31,6 +33,7 @@ export default function MessageList({
             message={message}
             // The client's answer to this reply, to judge whether it moved things on.
             nextClientMessage={messages.slice(index + 1).find((m) => m.role === "user")?.content}
+            onSaveNote={onSaveNote}
           />
         ))
       )}

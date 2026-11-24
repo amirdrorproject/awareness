@@ -1,10 +1,21 @@
-import type { AnalysisState, ReplyChecks, RunTrace, ToolCall, TurnAnalysis, TurnLog } from "@/lib/chat/types";
+import { useId, useState } from "react";
+import type {
+  HumanComparison,
+  ObserverMeta,
+  ObserverRun,
+  PromptVersion,
+  ReplyChecks,
+  RunTrace,
+  ToolCall,
+  TurnLog,
+  TurnOutcome,
+} from "@/lib/chat/types";
 
-// "Run details" under a reply. On top, the turn in the four parts Amir reviews:
-// understanding, focus and rationale (an observer's reading of the
-// conversation - not Claude's own reasoning) and the reply itself. Below, how
-// it came about technically: Claude's thinking summary, the input, knowledge
-// and tools, the model, and performance.
+// "Run details" under a reply. On top, the agent's own log, then the research
+// observer (an independent reading of the story and of the agent's choice -
+// never Claude's own reasoning), hidden until Amir writes what he sees or
+// skips. Below, how the reply came about technically: Claude's thinking
+// summary, the input, knowledge and tools, the model, and performance.
 // Collapsed by default so the conversation still reads as a conversation.
 
 function formatDate(iso: string) {
@@ -45,10 +56,11 @@ function ToolCallLine({ call }: { call: ToolCall }) {
   );
 }
 
-const NOT_INFERABLE = "לא ניתן להסיק";
+// Answers that mean "nothing found", shown dimmed.
+const EMPTY_ANSWERS = ["לא ניתן לקבוע", "לא זוהה", "אין"];
 
 function AnalysisField({ label, text }: { label: string; text: string }) {
-  const missing = text.trim() === NOT_INFERABLE;
+  const missing = EMPTY_ANSWERS.includes(text.trim());
   return (
     <div>
       <div className="font-semibold text-gray-800">{label}</div>
@@ -57,58 +69,16 @@ function AnalysisField({ label, text }: { label: string; text: string }) {
   );
 }
 
-function TurnAnalysisBlock({
-  analysis,
-  state,
-  reply,
-}: {
-  analysis?: TurnAnalysis;
-  state?: AnalysisState;
-  reply: string;
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-lg bg-white/70 p-2.5">
-      <p className="text-gray-500">
-        ניתוח של צופה: פירוש של מה שעולה מהשיחה ומהתשובה, לא ההסבר של הסוכן עצמו. ההסבר של Claude נמצא ב&quot;סיכום החשיבה&quot; למטה.
-      </p>
-      {state === "done" && analysis ? (
-        <>
-          <AnalysisField label="הבנה" text={analysis.understanding} />
-          <AnalysisField label="מוקד" text={analysis.focus} />
-          <AnalysisField label="היגיון הבחירה" text={analysis.rationale} />
-        </>
-      ) : (
-        <p className="text-gray-500">
-          {state === "pending" ? "מנתח את התור..." : "הניתוח נכשל. סיכום החשיבה של Claude מופיע למטה."}
-        </p>
-      )}
-      <AnalysisField label="תגובה" text={reply} />
-    </div>
-  );
+function formatVersion(version?: PromptVersion | null) {
+  return version?.source === "admin" && version.created_at
+    ? `גרסה מ-${formatDate(version.created_at)}${version.note ? ` (${version.note})` : ""}`
+    : "הגרסה שבקוד";
 }
 
-// The progress sign of each state, from Amir's strategy (prompts/module_states.md),
-// shown next to the client's next message so the two can be compared.
-const PROGRESS_SIGNS: Record<string, string> = {
-  א: "נוצר מוקד ראשוני או שהלקוח מוסיף מידע בעל משמעות מרצונו.",
-  ב: "הסיפור הגיע לנקודה שבה אפשר להבין את עניינו המרכזי או לברר עם הלקוח מה חשוב לו.",
-  ג: "הלקוח מצליח לבחור עניין שחשוב לו להתחיל ממנו, גם אם יתר המורכבות נותרת פתוחה.",
-  ד: "מתגבש מוקד שהלקוח מאשר, מתקן או מנסח בעצמו.",
-  ה: "הלקוח מפתח הבנה, מזהה אפשרות, מחדד החלטה או מגדיר פעולה בעלת משמעות עבורו.",
-};
-
-function TurnLogBlock({
-  log,
-  checks,
-  nextClientMessage,
-}: {
-  log?: TurnLog | null;
-  checks?: ReplyChecks;
-  nextClientMessage?: string;
-}) {
+function TurnLogBlock({ log, checks }: { log?: TurnLog | null; checks?: ReplyChecks }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg bg-white/70 p-2.5">
-      <p className="text-gray-500">לוג הסוכן: מה הסוכן עצמו כתב לפני התגובה, ומה התגובה עשתה בפועל.</p>
+      <p className="text-gray-500">לוג הסוכן: מה הסוכן עצמו כתב לפני התגובה.</p>
       {log ? (
         <>
           <AnalysisField label="מצב השיחה" text={log.state ?? "—"} />
@@ -116,7 +86,11 @@ function TurnLogBlock({
           <AnalysisField label="משימה תקשורתית" text={log.task ?? "—"} />
           <AnalysisField label="תנועה שנבחרה" text={log.move ?? "—"} />
           <AnalysisField label="ממה להימנע" text={log.avoid ?? "—"} />
-          <AnalysisField label="השערה שהוחזקה ולא הוצגה" text={log.held_hypothesis ?? "—"} />
+          {log.held_hypothesis !== undefined && log.hypothesis === undefined ? (
+            <AnalysisField label="השערה שהוחזקה ולא הוצגה (שדה קודם)" text={log.held_hypothesis} />
+          ) : (
+            <AnalysisField label="השערה על המצב" text={log.hypothesis ?? "—"} />
+          )}
         </>
       ) : (
         <p className="text-gray-500">לא נכתב לוג לתור הזה.</p>
@@ -124,9 +98,7 @@ function TurnLogBlock({
       {checks && (
         <div>
           <div className="font-semibold text-gray-800">בפועל</div>
-          <p>
-            {checks.words} מילים · {checks.questions} סימני שאלה
-          </p>
+          <p>{checks.words} מילים</p>
           {checks.flags.map((flag) => (
             <p key={flag} className="text-amber-700">
               ⚠ {flag}
@@ -134,18 +106,192 @@ function TurnLogBlock({
           ))}
         </div>
       )}
-      {log && log.states.length > 0 && (
-        <div>
-          <div className="font-semibold text-gray-800">התקדמות</div>
-          {log.states.map((letter) => (
-            <p key={letter} className="text-gray-600">
-              סימן להתקדמות במצב {letter}׳: {PROGRESS_SIGNS[letter]}
+    </div>
+  );
+}
+
+// Amir's own reading of the turn, written before the observer's is shown.
+function HumanNoteForm({ onSave }: { onSave: (text: string | null) => void }) {
+  const [text, setText] = useState("");
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="font-semibold text-gray-800" htmlFor={id}>
+        מה אני מזהה בסיפור?
+      </label>
+      <textarea
+        id={id}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        className="rounded border border-gray-300 bg-white p-1.5 text-xs text-gray-900"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => onSave(text)}
+          disabled={!text.trim()}
+          className="rounded-full border border-gray-300 bg-white px-3 py-0.5 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          שמירה
+        </button>
+        <button onClick={() => onSave(null)} className="rounded-full px-3 py-0.5 text-gray-500 hover:bg-gray-50">
+          דילוג
+        </button>
+      </div>
+      <p className="text-gray-500">ניתוח הצופה יוצג אחרי השמירה או הדילוג.</p>
+    </div>
+  );
+}
+
+function HumanComparisonBlock({
+  note,
+  comparison,
+  state,
+}: {
+  note: string;
+  comparison?: HumanComparison;
+  state?: "pending" | "done" | "error";
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-blue-100 bg-blue-50/60 p-2">
+      <AnalysisField label="מה זיהיתי" text={note} />
+      {comparison ? (
+        <>
+          <AnalysisField label={`הסוכן: ${comparison.agent}`} text={comparison.agent_evidence} />
+          <AnalysisField label={`הצופה: ${comparison.observer}`} text={comparison.observer_evidence} />
+        </>
+      ) : (
+        <p className="text-gray-500">
+          {state === "error" ? "ההשוואה נכשלה." : "ההשוואה תרוץ כשהצופה יסיים..."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function OutcomeBlock({ outcome, nextClientMessage }: { outcome?: TurnOutcome; nextClientMessage?: string }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="font-semibold text-gray-800">תוצאות התור (מתוך תגובת הלקוח הבאה)</div>
+      {outcome?.no_client_reply ? (
+        <p className="text-gray-500">אין תגובת לקוח</p>
+      ) : !nextClientMessage ? (
+        <p className="text-gray-500">הלקוח עוד לא הגיב.</p>
+      ) : (
+        <>
+          <p className="whitespace-pre-wrap text-gray-600">תגובת הלקוח: {nextClientMessage}</p>
+          {outcome ? (
+            <>
+              <AnalysisField label="האם הובהר המוקד" text={outcome.focus} />
+              <AnalysisField label="האם החשיבה התקדמה" text={outcome.progress} />
+              <AnalysisField label="מה הלקוח עשה עם מה שהוצע" text={outcome.offer} />
+            </>
+          ) : (
+            <p className="text-gray-500">התוצאות ייכתבו בקריאה 1 של התור הבא.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  story: "קריאה 1: מנתח את הסיפור...",
+  choice: "קריאה 2: מנתח את בחירת הסוכן...",
+  comparison: "קריאה 3: משווה ללוג הסוכן...",
+};
+
+function ObserverBlock({
+  observer,
+  humanNote,
+  onSaveNote,
+  nextClientMessage,
+}: {
+  observer: ObserverRun;
+  humanNote?: { text: string | null };
+  onSaveNote: (text: string | null) => void;
+  nextClientMessage?: string;
+}) {
+  const { story, choice, comparison } = observer;
+  // Every observer call made for this turn (outcome's runs with the next turn).
+  const metas = [story?.meta, choice?.meta, comparison?.meta, observer.humanComparison?.meta].filter(
+    (meta): meta is ObserverMeta => Boolean(meta)
+  );
+  const cost = metas.reduce((sum, meta) => sum + (meta.cost_usd ?? 0), 0);
+  // On a turn the observer didn't run on there is nothing to hide.
+  const hidden = Boolean(observer.stage) && !humanNote;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-white/70 p-2.5">
+      <p className="text-gray-500">
+        הצופה המחקרי: ניתוח עצמאי של הסיפור ושל בחירת הסוכן. הוא לא רואה את סיכום החשיבה של Claude.
+      </p>
+      {hidden ? (
+        <HumanNoteForm onSave={onSaveNote} />
+      ) : (
+        <>
+          {humanNote?.text && (
+            <HumanComparisonBlock note={humanNote.text} comparison={observer.humanComparison} state={observer.humanState} />
+          )}
+
+          {story && (
+            <>
+              <div className="font-semibold text-gray-500">קריאה 1: הסיפור (לפני תגובת הסוכן)</div>
+              <AnalysisField label="מה ניתן לזהות אצל המספר" text={story.narrator} />
+              <AnalysisField label="מתח בדברי הלקוח" text={story.tension} />
+              <div>
+                <div className="font-semibold text-gray-800">הזדמנויות לחשיבה</div>
+                {story.opportunities.length > 0 ? (
+                  <ul className="list-disc ps-4">
+                    {story.opportunities.map((o) => (
+                      <li key={o}>{o}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-400">לא זוהו</p>
+                )}
+              </div>
+            </>
+          )}
+
+          {choice && (
+            <>
+              <div className="font-semibold text-gray-500">קריאה 2: בחירת הסוכן</div>
+              <AnalysisField label="מה נראה שהוביל לבחירת הכיוון" text={choice.direction} />
+              <AnalysisField label={`יותר משאלה עצמאית אחת: ${choice.multiple_questions}`} text={choice.questions_note} />
+            </>
+          )}
+
+          {comparison && (
+            <>
+              <div className="font-semibold text-gray-500">קריאה 3: השוואה ללוג הסוכן</div>
+              {comparison.skipped ? (
+                <p className="text-gray-400">{comparison.skipped}</p>
+              ) : (
+                <>
+                  {comparison.items.map((item) => (
+                    <AnalysisField key={item.opportunity} label={`${item.classification}: ${item.opportunity}`} text={item.evidence} />
+                  ))}
+                  <AnalysisField label="מסקנה מחקרית" text={comparison.conclusion} />
+                </>
+              )}
+            </>
+          )}
+
+          {observer.stage && STAGE_LABELS[observer.stage] && <p className="text-gray-500">{STAGE_LABELS[observer.stage]}</p>}
+          {observer.stage === "error" && <p className="text-red-600">הצופה נכשל: {observer.error}</p>}
+
+          <OutcomeBlock outcome={observer.outcome} nextClientMessage={nextClientMessage} />
+
+          {metas.length > 0 && (
+            <p className="text-gray-500" dir="rtl">
+              <span dir="ltr">
+                {metas[0].model} · effort {metas[0].effort}
+              </span>{" "}
+              · פרומפט הצופה: {formatVersion(metas[0].prompt)} · {metas.length} קריאות · עלות משוערת: ${cost.toFixed(3)}
             </p>
-          ))}
-          <p className="whitespace-pre-wrap text-gray-800">
-            {nextClientMessage ? `תגובת הלקוח: ${nextClientMessage}` : "הלקוח עוד לא הגיב."}
-          </p>
-        </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -154,16 +300,16 @@ function TurnLogBlock({
 export default function RunDetails({
   trace,
   toolCalls,
-  reply,
-  analysis,
-  analysisState,
+  observer,
+  humanNote,
+  onSaveNote,
   nextClientMessage,
 }: {
   trace: RunTrace;
   toolCalls?: ToolCall[];
-  reply: string;
-  analysis?: TurnAnalysis;
-  analysisState?: AnalysisState;
+  observer?: ObserverRun;
+  humanNote?: { text: string | null };
+  onSaveNote: (text: string | null) => void;
   nextClientMessage?: string;
 }) {
   const calls = toolCalls ?? [];
@@ -191,11 +337,16 @@ export default function RunDetails({
           </Row>
         ) : (
           <>
-            {trace.states_module && (
-              <TurnLogBlock log={trace.turn_log} checks={trace.checks} nextClientMessage={nextClientMessage} />
-            )}
+            {trace.states_module && <TurnLogBlock log={trace.turn_log} checks={trace.checks} />}
 
-            <TurnAnalysisBlock analysis={analysis} state={analysisState} reply={reply} />
+            {observer && (
+              <ObserverBlock
+                observer={observer}
+                humanNote={humanNote}
+                onSaveNote={onSaveNote}
+                nextClientMessage={nextClientMessage}
+              />
+            )}
 
             <Row label="סיכום החשיבה של Claude">
               {trace.thinking && trace.thinking.length > 0 ? (
@@ -211,26 +362,25 @@ export default function RunDetails({
 
             <Row label="קלט">
               <div>
-                פרומפט המנוע:{" "}
-                {trace.prompt?.source === "admin" && trace.prompt.created_at
-                  ? `גרסה מ-${formatDate(trace.prompt.created_at)}${trace.prompt.note ? ` (${trace.prompt.note})` : ""}`
-                  : "הגרסה שבקוד"}
+                סביבה:{" "}
+                {trace.runtime ? (
+                  <span dir="ltr">
+                    {[trace.runtime.env, trace.runtime.branch, trace.runtime.commit].filter(Boolean).join(" · ")}
+                  </span>
+                ) : (
+                  "לא תועדה"
+                )}
               </div>
+              <div>פרומפט המנוע: {formatVersion(trace.prompt)}</div>
               <div>
                 מודול ניתוח הצלחה:{" "}
                 {!trace.success_module
-                  ? "כבוי"
-                  : trace.success_module !== true && trace.success_module.source === "admin" && trace.success_module.created_at
-                    ? `גרסה מ-${formatDate(trace.success_module.created_at)}${trace.success_module.note ? ` (${trace.success_module.note})` : ""}`
-                    : "הגרסה שבקוד"}
+                  ? "לא נטען"
+                  : `נטען, ${formatVersion(trace.success_module === true ? null : trace.success_module)}. אין לו מנגנון הפעלה נפרד: כשהוא נטען, הוא חלק מהפרומפט בכל תור.`}
               </div>
               <div>
                 מודול מצבי שיחה ולוג:{" "}
-                {!trace.states_module
-                  ? "כבוי"
-                  : trace.states_module !== true && trace.states_module.source === "admin" && trace.states_module.created_at
-                    ? `גרסה מ-${formatDate(trace.states_module.created_at)}${trace.states_module.note ? ` (${trace.states_module.note})` : ""}`
-                    : "הגרסה שבקוד"}
+                {!trace.states_module ? "כבוי" : formatVersion(trace.states_module === true ? null : trace.states_module)}
               </div>
               <div>היסטוריה: {trace.history_messages} הודעות</div>
               {trace.system_suffix ? (

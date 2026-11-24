@@ -15,7 +15,14 @@ from .conversation_store import save_turn
 from .engine import generate_reply
 from .memory import format_memory_for_prompt, load_latest_memory, save_memory, summarize_conversation
 from .prompts import PROMPTS, get_prompt_record, list_versions, save_version
-from .turn_analysis import analyze_turn, save_analysis
+from .observer import (
+    NO_CLIENT_REPLY,
+    analyze_choice,
+    analyze_story,
+    compare_with_human,
+    compare_with_log,
+    save_to_trace,
+)
 
 app = FastAPI()
 
@@ -212,28 +219,122 @@ def chat(request: ChatRequest):
     }
 
 
-class TurnAnalysisRequest(BaseModel):
-    # The conversation up to and including the client message being answered.
+# The research observer (api/observer.py). The chat calls these one after
+# another once a reply is on screen, each as its own request, so no single
+# request waits on three model calls. Every step is saved on its own key in
+# the reply's trace as soon as it is done.
+
+
+def _observer_call(name: str, run):
+    try:
+        return run(anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")))
+    except Exception as exc:
+        logger.exception("observer %s failed", name)
+        return {"error": f"Observer {name} failed: {exc}"}
+
+
+class ObserverStoryRequest(BaseModel):
+    # The conversation up to and including the client message being answered,
+    # without the agent's logs.
+    messages: list[ChatMessage]
+    message_id: str | None = None
+    # The agent's previous reply, whose outcome this call also judges.
+    previous_message_id: str | None = None
+
+
+@app.post("/api/observer/story")
+def observer_story(request: ObserverStoryRequest):
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    result = _observer_call("story", lambda client: analyze_story(client, messages))
+    if "error" not in result:
+        save_to_trace(request.message_id, {"observer_story": result["story"]})
+        if result["outcome"]:
+            save_to_trace(request.previous_message_id, {"observer_outcome": result["outcome"]})
+    return result
+
+
+class ObserverChoiceRequest(BaseModel):
     messages: list[ChatMessage]
     reply: str
+    story: dict
     message_id: str | None = None
 
 
-@app.post("/api/turn-analysis")
-def turn_analysis(request: TurnAnalysisRequest):
-    # Called by the chat once a reply is on screen: an observer's reading of the
-    # turn (understanding / focus / rationale) for the run-details panel.
-    try:
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        analysis = analyze_turn(
-            client, [{"role": m.role, "content": m.content} for m in request.messages], request.reply
-        )
-    except Exception as exc:
-        logger.exception("turn analysis failed")
-        return {"error": f"Failed to analyse the turn: {exc}"}
-    if request.message_id:
-        save_analysis(request.message_id, analysis)
-    return {"analysis": analysis.model_dump()}
+@app.post("/api/observer/choice")
+def observer_choice(request: ObserverChoiceRequest):
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    result = _observer_call("choice", lambda client: analyze_choice(client, messages, request.reply, request.story))
+    if "error" not in result:
+        save_to_trace(request.message_id, {"observer_choice": result})
+    return result
+
+
+class ObserverComparisonRequest(BaseModel):
+    story: dict
+    choice: dict
+    turn_log: dict | None = None
+    message_id: str | None = None
+
+
+@app.post("/api/observer/comparison")
+def observer_comparison(request: ObserverComparisonRequest):
+    result = _observer_call(
+        "comparison", lambda client: compare_with_log(client, request.story, request.choice, request.turn_log)
+    )
+    if "error" not in result:
+        save_to_trace(request.message_id, {"observer_comparison": result})
+    return result
+
+
+class HumanNoteRequest(BaseModel):
+    message_id: str | None = None
+    # What Amir sees in the story; None when he chose to skip.
+    note: str | None = None
+
+
+@app.post("/api/observer/note")
+def observer_note(request: HumanNoteRequest):
+    note = (request.note or "").strip() or None
+    save_to_trace(request.message_id, {"human_note": {"text": note, "skipped": note is None}})
+    return {"ok": True}
+
+
+class HumanComparisonRequest(BaseModel):
+    note: str
+    messages: list[ChatMessage]
+    reply: str
+    turn_log: dict | None = None
+    story: dict
+    choice: dict
+    comparison: dict
+    message_id: str | None = None
+
+
+@app.post("/api/observer/human-comparison")
+def observer_human_comparison(request: HumanComparisonRequest):
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    result = _observer_call(
+        "human comparison",
+        lambda client: compare_with_human(
+            client, request.note, messages, request.reply, request.turn_log, request.story, request.choice, request.comparison
+        ),
+    )
+    if "error" not in result:
+        save_to_trace(request.message_id, {"human_comparison": result})
+    return result
+
+
+class NoClientReplyRequest(BaseModel):
+    message_id: str
+
+
+@app.post("/api/observer/no-client-reply")
+def observer_no_client_reply(request: NoClientReplyRequest):
+    # The conversation ended on the agent's reply: its outcome is recorded as
+    # such, with no inference about progress.
+    outcome = {"no_client_reply": True, "focus": NO_CLIENT_REPLY, "progress": NO_CLIENT_REPLY, "offer": NO_CLIENT_REPLY}
+    save_to_trace(request.message_id, {"observer_outcome": outcome})
+    return {"outcome": outcome}
 
 
 class EndConversationRequest(BaseModel):
