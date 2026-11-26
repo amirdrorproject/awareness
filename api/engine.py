@@ -1,6 +1,8 @@
 import logging
 import os
+import subprocess
 import time
+from functools import lru_cache
 
 import anthropic
 
@@ -26,15 +28,40 @@ PRICES_PER_MTOK = {
 }
 
 
+@lru_cache(maxsize=1)
+def _local_git() -> dict:
+    # Read once per server start: the dev server restarts when the code
+    # changes, so the answer holds until then. "dirty" means the code that ran
+    # differs from the commit (uncommitted edits), so the hash alone doesn't
+    # describe it. No git (or not a checkout) -> all None.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=repo, text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+
+    try:
+        return {
+            "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+            "commit": git("rev-parse", "--short=7", "HEAD"),
+            "dirty": bool(git("status", "--porcelain")),
+        }
+    except Exception:
+        return {"branch": None, "commit": None, "dirty": None}
+
+
 def get_runtime() -> dict:
-    # Where this turn ran: Vercel sets these on every deployment; locally
-    # there are none.
+    # Where this turn ran, so every run in an experiment can be checked to be
+    # on the same code. Vercel sets these on every deployment (a deployment
+    # is built from a commit, so it is never dirty); locally they come from git.
     commit = os.environ.get("VERCEL_GIT_COMMIT_SHA")
-    return {
-        "env": os.environ.get("VERCEL_ENV") or "local",
-        "branch": os.environ.get("VERCEL_GIT_COMMIT_REF"),
-        "commit": commit and commit[:7],
-    }
+    if commit:
+        return {
+            "env": os.environ.get("VERCEL_ENV"),
+            "branch": os.environ.get("VERCEL_GIT_COMMIT_REF"),
+            "commit": commit[:7],
+            "dirty": False,
+        }
+    return {"env": "local", **_local_git()}
 
 
 def get_engine_prompt() -> str:

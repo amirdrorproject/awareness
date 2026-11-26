@@ -368,9 +368,12 @@ export default function RunDetails({
               <div>
                 סביבה:{" "}
                 {trace.runtime ? (
-                  <span dir="ltr">
-                    {[trace.runtime.env, trace.runtime.branch, trace.runtime.commit].filter(Boolean).join(" · ")}
-                  </span>
+                  <>
+                    <span dir="ltr">
+                      {[trace.runtime.env, trace.runtime.branch, trace.runtime.commit].filter(Boolean).join(" · ")}
+                    </span>
+                    {trace.runtime.dirty ? " (קוד ששונה ולא נשמר ב-commit)" : null}
+                  </>
                 ) : (
                   "לא תועדה"
                 )}

@@ -31,7 +31,7 @@ export interface RunTrace {
   effort?: string;
   stop_reason?: string;
   // Where the turn ran: Vercel environment, branch and commit ("local" when run locally).
-  runtime?: { env: string; branch: string | null; commit: string | null };
+  runtime?: { env: string; branch: string | null; commit: string | null; dirty?: boolean | null };
   prompt?: PromptVersion;
   // The success-analysis module's version, when it was part of the prompt.
   // A failed turn only knows that it was on.
